@@ -1,0 +1,6 @@
+httpx
+feedparser
+lxml
+sqlalchemy
+psycopg2-binary
+python-dotenv
