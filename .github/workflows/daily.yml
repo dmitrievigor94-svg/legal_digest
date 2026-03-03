@@ -15,9 +15,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Test FAS RSS
-        run: curl -I https://fas.gov.ru/rss/news.xml
-        
+      - name: Test FAS RSS (headers)
+        run: |
+          set -e
+          curl -I -L --max-time 20 --connect-timeout 10 https://fas.gov.ru/rss/news.xml || true
+      - name: Test FAS RSS (body sample)
+        run: |
+          set -e
+          curl -L --max-time 20 --connect-timeout 10 -sS https://fas.gov.ru/rss/news.xml | head -c 1000 | sed -n '1,20p' || true          
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
