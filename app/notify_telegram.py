@@ -1,45 +1,47 @@
+# app/notify_telegram.py
 import os
-from typing import List
 import httpx
 
 TG_API = "https://api.telegram.org/bot{token}/{method}"
 MAX_LEN = 3900
 
-def _split_text(text: str, max_len: int = MAX_LEN) -> List[str]:
-    text = text or ""
+
+def _split_html_text(text: str, max_len: int = MAX_LEN):
+    """
+    Делим длинный HTML-текст на куски <= max_len,
+    стараясь резать по двойному переносу строки.
+    """
     if len(text) <= max_len:
         return [text]
 
-    parts, cur, cur_len = [], [], 0
-    for line in text.splitlines(True):
-        if cur_len + len(line) > max_len and cur:
-            parts.append("".join(cur))
-            cur, cur_len = [], 0
-        while len(line) > max_len:
-            parts.append(line[:max_len])
-            line = line[max_len:]
-        cur.append(line)
-        cur_len += len(line)
-
-    if cur:
-        parts.append("".join(cur))
+    parts = []
+    while len(text) > max_len:
+        cut = text.rfind("\n\n", 0, max_len)
+        if cut == -1:
+            cut = max_len
+        parts.append(text[:cut])
+        text = text[cut:].lstrip()
+    if text:
+        parts.append(text)
     return parts
 
-def send_telegram_message(text: str) -> None:
+
+def send_telegram_message_html(text: str, disable_preview: bool = True) -> None:
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     chat_id = int(os.environ["TELEGRAM_CHAT_ID"])
 
     url = TG_API.format(token=token, method="sendMessage")
-    chunks = _split_text(text)
+    chunks = _split_html_text(text)
 
-    with httpx.Client(timeout=20) as client:
+    with httpx.Client(timeout=25) as client:
         for chunk in chunks:
             resp = client.post(
                 url,
                 json={
                     "chat_id": chat_id,
                     "text": chunk,
-                    "disable_web_page_preview": True,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": disable_preview,
                 },
             )
             resp.raise_for_status()

@@ -31,10 +31,11 @@ def _parse_published(entry) -> Optional[datetime]:
     return datetime(*t[:6], tzinfo=timezone.utc)
 
 
-def _download_feed(feed_url: str) -> tuple[bytes, str, str]:
+def _download_feed(feed_url: str, ssl_verify: bool = True) -> tuple[bytes, str, str]:
     with httpx.Client(
         follow_redirects=True,
         timeout=25,
+        verify=ssl_verify,
         headers={
             "User-Agent": USER_AGENT,
             "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.9, */*;q=0.8",
@@ -136,9 +137,9 @@ def _fallback_parse_rss_items(content: bytes) -> list[dict]:
     return items
 
 
-def fetch_rss(feed_url: str, source_id: str, source_name: str) -> list[dict]:
+def fetch_rss(feed_url: str, source_id: str, source_name: str, ssl_verify: bool = True) -> list[dict]:
     try:
-        content, content_type, final_url = _download_feed(feed_url)
+        content, content_type, final_url = _download_feed(feed_url, ssl_verify=ssl_verify)
     except Exception as e:
         # ВАЖНО: не печатаем тут, а пробрасываем наружу
         raise RuntimeError(f"[RSS ERROR] {source_name}: не удалось скачать RSS: {e}") from e

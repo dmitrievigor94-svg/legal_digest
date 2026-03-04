@@ -1,145 +1,154 @@
 # app/digest.py
-from datetime import datetime, timezone
+from __future__ import annotations
+
+from datetime import datetime
 from collections import defaultdict
 from typing import Optional, Tuple
+
+import html
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Article
-from app.filtering import is_relevant
 
-TOPIC_ORDER = [
-    "законодательство",
-    "регуляторы",
-    "штрафы",
-    "судебная практика",
-    "персональные данные",
-    "интеллектуальная собственность",
-    "потребители/реклама",
-    "прочее",
+EVENT_ORDER = [
+    "LAW_DRAFT",
+    "LAW_ADOPTED",
+    "GUIDANCE",
+    "ENFORCEMENT",
+    "COURTS",
+    "MARKET_CASES",
 ]
 
-def _fmt_dt(dt):
-    if not dt:
-        return "—"
-    try:
-        return dt.astimezone().strftime("%d.%m %H:%M")
-    except Exception:
-        return "—"
+EVENT_TITLES = {
+    "LAW_DRAFT": "ЗАКОНОПРОЕКТЫ / ПРОЕКТЫ НПА",
+    "LAW_ADOPTED": "ПРИНЯТО / ОПУБЛИКОВАНО",
+    "GUIDANCE": "РАЗЪЯСНЕНИЯ / ПОЗИЦИИ",
+    "ENFORCEMENT": "КОНТРОЛЬ / ШТРАФЫ / ДЕЛА",
+    "COURTS": "СУДЕБНАЯ ПРАКТИКА",
+    "MARKET_CASES": "КЕЙСЫ РЫНКА",
+}
 
-def _in_window(dt: Optional[datetime], window: Optional[Tuple[datetime, datetime]]) -> bool:
-    if window is None:
+TG_SUMMARY_MAX_CHARS = 320
+TG_MAX_PER_SECTION = 25  # можно поднять/опустить
+
+OFFICIAL_SOURCES = {
+    "fas_news", "fas_acts", "fas_clarifications", "fas_analytics", "fas_media",
+    "cbr_events", "cbr_press",
+    "rkn_news", "fstec_news", "pravo_gov", "regulation_gov",
+}
+
+MEDIA_SOURCES = {"drussia_all", "rapsi_judicial", "rapsi_publications"}
+
+
+def _pass_threshold(a: Article) -> bool:
+    """
+    Средняя точность:
+    - official: score>=1
+    - media: score>=4
+    - если score ещё None (старые записи) — пропускаем, чтобы не "обнулить" историю
+    """
+    if a.score is None:
         return True
-    if dt is None:
-        return False
-    start, end = window
-    return start <= dt < end
 
-def get_unsent_articles(
+    if a.source_id in MEDIA_SOURCES:
+        return a.score >= 4
+    return a.score >= 1
+
+
+def get_articles_for_digest(
+    db: Session,
+    limit: int = 800,
+    window: Optional[Tuple[datetime, datetime]] = None,
+) -> list[Article]:
+    q = (
+        select(Article)
+        # .where(Article.sent_at.is_(None))  # ВРЕМЕННО ОТКЛЮЧЕНО: шлём повторно всё
+        .order_by(Article.published_at.desc().nullslast(), Article.created_at.desc())
+        .limit(limit)
+    )
+    rows = db.execute(q).scalars().all()
+
+    # окно по дате
+    if window is not None:
+        start, end = window
+        rows = [a for a in rows if a.published_at is not None and start <= a.published_at < end]
+
+    # scoring-фильтр
+    rows = [a for a in rows if _pass_threshold(a)]
+
+    return rows
+
+
+def build_telegram_digest_blocks(
     db: Session,
     limit: int = 500,
     window: Optional[Tuple[datetime, datetime]] = None,
-) -> tuple[list[Article], dict]:
-    """
-    window = (start, end) в UTC
-    """
-    raw = db.execute(
-        select(Article)
-        .where(Article.sent_at.is_(None))
-        .order_by(Article.published_at.desc().nullslast(), Article.created_at.desc())
-        .limit(limit)
-    ).scalars().all()
-
-    stats = {
-        "raw": len(raw),
-        "dropped_relevance": 0,
-        "dropped_no_date": 0,
-        "dropped_outside_window": 0,
-    }
-
-    # 1) фильтр полезности
-    rel = []
-    for a in raw:
-        if is_relevant(a.source_id, a.title, a.canonical_url):
-            rel.append(a)
-        else:
-            stats["dropped_relevance"] += 1
-
-    # 2) фильтр по окну "вчера"
-    if window is None:
-        return (rel, stats)
-
-    start, end = window
-    out = []
-    for a in rel:
-        if a.published_at is None:
-            stats["dropped_no_date"] += 1
-            continue
-        if not (start <= a.published_at < end):
-            stats["dropped_outside_window"] += 1
-            continue
-        out.append(a)
-
-    return (out, stats)
-
-def build_console_digest(
-    db: Session,
-    limit: int = 200,
-    window: Optional[Tuple[datetime, datetime]] = None,
 ) -> tuple[str, list[int]]:
-    rows, stats = get_unsent_articles(db, limit=max(limit, 500), window=window)
+    rows = get_articles_for_digest(db, limit=max(limit, 800), window=window)
+
+    day_str = datetime.now().astimezone().strftime("%d.%m.%Y")
+
+    lines: list[str] = []
+    lines.append(f"<b>Юридический дайджест</b> • <b>{html.escape(day_str)}</b>")
+    lines.append("")
 
     if not rows:
-        lines = ["Новых материалов нет."]
-        if window:
-            start, end = window
-            lines.append(f"Окно: {start.isoformat()} .. {end.isoformat()} (UTC)")
-        lines.append(
-            f"Сырых: {stats['raw']}, отфильтровано: "
-            f"полезность={stats['dropped_relevance']}, "
-            f"без даты={stats['dropped_no_date']}, "
-            f"вне окна={stats['dropped_outside_window']}"
-        )
+        lines.append("<i>Новых материалов нет.</i>")
         return ("\n".join(lines), [])
 
     grouped: dict[str, list[Article]] = defaultdict(list)
     for a in rows:
-        grouped[a.topic or "прочее"].append(a)
+        key = (a.event_type or a.topic or "MARKET_CASES")  # fallback
+        grouped[key].append(a)
 
-    now_local = datetime.now().astimezone().strftime("%d.%m.%Y %H:%M")
+    first_section = True
 
-    lines: list[str] = []
-    lines.append(f"Ежедневный юридический дайджест • {now_local}")
-    lines.append(f"Новых материалов: {len(rows)}")
-
-    if window:
-        start, end = window
-        lines.append(f"Окно (UTC): {start.isoformat()} .. {end.isoformat()}")
-        lines.append(
-            f"Отсев: полезность={stats['dropped_relevance']}, "
-            f"без даты={stats['dropped_no_date']}, "
-            f"вне окна={stats['dropped_outside_window']}"
-        )
-    else:
-        if stats["dropped_relevance"]:
-            lines.append(f"Отфильтровано по полезности: {stats['dropped_relevance']}")
-
-    lines.append("")
-
-    for topic in TOPIC_ORDER:
-        items = grouped.get(topic, [])
+    for event_type in EVENT_ORDER:
+        items = grouped.get(event_type, [])
         if not items:
             continue
 
-        lines.append(topic.upper())
-        for a in items[:20]:
-            # дату можно убрать из строки позже, но пока оставим компактно
-            lines.append(f"- [{_fmt_dt(a.published_at)}] ({a.source_name}) {a.title}")
-            if a.summary:
-                lines.append(f"  {a.summary}")
-            lines.append(f"  {a.canonical_url}")
+        if not first_section:
+            lines.append("")  # один пустой абзац между секциями
+
+        lines.append(f"<b>{html.escape(EVENT_TITLES.get(event_type, event_type))}</b>")
         lines.append("")
+
+        first_section = False
+
+        # сортировка уже в запросе, но на всякий случай
+        items_sorted = sorted(
+            items,
+            key=lambda a: (
+                a.published_at is None,
+                a.published_at or datetime.min.replace(tzinfo=datetime.now().astimezone().tzinfo),
+                a.created_at,
+            ),
+            reverse=True,
+        )[:TG_MAX_PER_SECTION]
+
+        for i, a in enumerate(items_sorted, start=1):
+            url = (a.canonical_url or a.url or "").strip()
+            ttl = (a.title or "").strip()
+            ttl_html = html.escape(ttl)
+
+            if url:
+                line = f"{i}. <a href=\"{html.escape(url)}\">{ttl_html}</a>"
+            else:
+                line = f"{i}. {ttl_html}"
+
+            lines.append(line)
+
+            s = (a.summary or "").strip()
+            if s:
+                if len(s) > TG_SUMMARY_MAX_CHARS:
+                    s = s[: TG_SUMMARY_MAX_CHARS - 1].rstrip() + "…"
+                lines.append(f"<blockquote>{html.escape(s)}</blockquote>")
+
+            if i != len(items_sorted):
+                lines.append("")  # один пустой абзац между новостями
 
     article_ids = [a.id for a in rows if a.id is not None]
     return ("\n".join(lines), article_ids)

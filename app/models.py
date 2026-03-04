@@ -1,6 +1,8 @@
 from sqlalchemy import String, Text, DateTime, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db import Base
+from sqlalchemy import JSON  # если Postgres — ок
+
 
 class Article(Base):
     __tablename__ = "articles"
@@ -12,7 +14,9 @@ class Article(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     source_id: Mapped[str] = mapped_column(String(64), index=True)
     source_name: Mapped[str] = mapped_column(String(256))
-
+    event_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    tags: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    score: Mapped[int | None] = mapped_column(nullable=True)
     title: Mapped[str] = mapped_column(String(512))
     url: Mapped[str] = mapped_column(Text)
     canonical_url: Mapped[str] = mapped_column(Text)

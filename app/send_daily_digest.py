@@ -7,13 +7,13 @@ from sqlalchemy import select
 from app.db import SessionLocal
 from app.migrate import main as migrate
 from app.fetch_rss import fetch_rss, save_new_articles
-from app.digest import build_console_digest
+from app.digest import build_telegram_digest_blocks
 from app.extract import fetch_and_extract_text, make_short_summary, is_bad_extracted_text, clean_fas_text
-from app.topics import detect_topic
+from app.classify import classify
 from app.models import Article
 from app.sources import SOURCES
 from app.published_at import fetch_published_at
-from app.notify_telegram import send_telegram_message
+from app.notify_telegram import send_telegram_message_html
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -28,7 +28,12 @@ def main() -> None:
         for s in SOURCES:
             now = datetime.now(timezone.utc)
             try:
-                items_raw = fetch_rss(s["url"], s["source_id"], s["source_name"])
+                items_raw = fetch_rss(
+                    s["url"],
+                    s["source_id"],
+                    s["source_name"],
+                    ssl_verify=bool(s.get("ssl_verify", True)),
+                )
             except Exception as e:
                 # важно: сообщаем в телегу только если хочешь шум; я бы пока логировал в stdout
                 print(str(e))
@@ -79,7 +84,13 @@ def main() -> None:
             else:
                 a.summary = ""
 
-            a.topic = detect_topic(a.title, a.raw_text or "", a.source_id)
+            c = classify(a.source_id, a.title, a.raw_text or "", a.canonical_url)
+            a.event_type = c.event_type
+            a.tags = c.tags
+            a.score = c.score
+
+            # старое поле topic можешь пока оставить для обратной совместимости:
+            a.topic = a.event_type  # временно, пока не перепишем digest на event_type
             a.fetched_at = datetime.now(timezone.utc)
 
         db.commit()
@@ -93,15 +104,14 @@ def main() -> None:
         end_local = datetime.combine(today_local, datetime.min.time(), tzinfo=local_tz)
         window = (start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc))
 
-        digest_text, sent_ids = build_console_digest(db, limit=500, window=window)
+        text, sent_ids = build_telegram_digest_blocks(db, limit=500, window=window)
 
         # 4) send to Telegram
-        # Если пусто — можно либо ничего не слать, либо слать "нет новых материалов"
-        if "Новых материалов: 0" in digest_text:
-            # решай сам — я бы слал короткую заглушку, чтобы было понятно что система жива
-            pass
+        # если реально пусто — не шлём (или шли заглушку, если хочешь)
+        if not sent_ids:
+            return
 
-        send_telegram_message(digest_text)
+        send_telegram_message_html(text)
 
         # 5) mark sent
         if sent_ids:
