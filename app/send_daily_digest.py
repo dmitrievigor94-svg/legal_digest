@@ -105,14 +105,14 @@ def main() -> None:
         window = (start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc))
 
         text, sent_ids = build_telegram_digest_blocks(db, limit=500, window=window)
-
+        print(f"[DIGEST] text_len={len(text)} sent_ids={len(sent_ids)} window_utc={window[0].isoformat()}..{window[1].isoformat()}")
         # 4) send to Telegram
         # если реально пусто — не шлём (или шли заглушку, если хочешь)
         if not sent_ids:
             return
-
+        print("[TG] sending...")
         send_telegram_message_html(text)
-
+        print("[TG] sent OK")
         # 5) mark sent
         if sent_ids:
             now = datetime.now(timezone.utc)
