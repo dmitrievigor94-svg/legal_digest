@@ -4,4 +4,4 @@ __pycache__/
 .venv/
 .DS_Store
 cron.log
-*.log
+*.loglegal_digest.db
