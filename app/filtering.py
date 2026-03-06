@@ -1,4 +1,6 @@
 # app/filtering.py
+from __future__ import annotations
+
 import re
 
 # Общие “мусорные” паттерны (для любых источников)
@@ -64,16 +66,76 @@ DRUSSIA_ALLOW_HINTS = [
     "крипто",
 ]
 
+# --- Consultant: режем мусор на входе (до БД) ---
+
+# Явно нужное (включая “русский язык / гос. язык”)
+CONSULTANT_ALLOWLIST_PATTERNS = [
+    r"\bрусск\w*\s+язык\w*\b.*\bгосударственн\w*\s+язык\w*\b",
+    r"\bгосударственн\w*\s+язык\w*\b.*\bрусск\w*\s+язык\w*\b",
+    r"\bиспользовани\w*\s+русск\w*\s+язык\w*\b",
+    r"\bинформаци\w*\s+для\s+потребител\w*\b.*\bрусск\w*\s+язык\w*\b",
+    r"\bроспотребнадзор\w*\b.*\bрусск\w*\s+язык\w*\b",
+]
+
+# Твои интересы (темы/отрасли) — но пропускаем их только вместе с юридическим триггером
+CONSULTANT_INTEREST_HINTS = [
+    # ПДн / РКН / 152-ФЗ / биометрия / утечки
+    r"\bперсональн(ые|ых)\s+данн\w*\b|\b152(?:-| )?фз\b|\bроскомнадзор\w*\b|\bутечк\w*\b|\bбиометри\w*\b",
+    # Реклама / маркировка
+    r"\bреклам\w*\b|\bмаркировк\w*\b",
+    # Конкуренция / антимонопольное / ФАС / картели / торги / закупки
+    r"\bантимонопол\w*\b|\bконкуренц\w*\b|\bфас\b|\bдоминирован\w*\b|\bкартел\w*\b|\bторг(и|ов)\b|\bзакупк\w*\b",
+    # Телеком / связь / нумерация / абонент
+    r"\bсвяз(ь|и)\b|\bоператор(ы)?\s+связи\b|\bабонентск\w*\s+номер\w*\b|\bнумерац\w*\b",
+    # IT / платформы / маркетплейсы / агрегаторы
+    r"\bмаркетплейс\w*\b|\bплатформ\w*\b|\bагрегатор\w*\b|\bонлайн[-\s]?сервис\w*\b|\bцифров\w*\s+платформ\w*\b",
+    # ИБ / кибер / ФСТЭК
+    r"\bинформационн\w*\s+безопасност\w*\b|\bфстэк\b|\bуязвимост\w*\b|\bвзлом\w*\b|\bвирусн\w*\b",
+    # Потребители / РПН
+    r"\bпотребител\w*\b|\bроспотребнадзор\w*\b",
+]
+
+# Юридические триггеры: без них Consultant-новость почти всегда мусор/вода
+CONSULTANT_LEGAL_TRIGGERS = [
+    r"\b(федеральн\w*\s+закон|законопроект|проект\s+нпа|проект\s+фз)\b",
+    r"\b(постановлени\w*\s+правительств|указ\s+президент|приказ\w*|распоряжен\w*)\b",
+    r"\b(официальн\w*\s+опубликован|вступа(ет|ют)\s+в\s+силу|зарегистрирован\w*\s+в\s+минюст)\b",
+    r"\b(разъяснен\w*|информационн\w*\s+письм|письмо\s+\w+|методич\w*|рекомендац\w*|позици(я|и)|обзор\s+практик)\b",
+    r"\b(верховн\w*\s+суд|конституционн\w*\s+суд|арбитраж\w*|апелляц\w*|кассац\w*|решени(е|я)|определени\w*|постановлени\w*)\b",
+    r"\b(предписан\w*|предупрежден\w*|провер(к|я|ка)|нарушени\w*|дело\s+возбуждено|привлечен\w*\s+к\s+ответственност\w*|штраф\w*)\b",
+]
+
+# Явный мусор Consultant (вне твоих интересов)
+CONSULTANT_HARD_DENY = [
+    r"\bпереч(ень|ни)\s+документ\w*\b",
+    r"\bквалификационн\w*\s+экзамен\w*\b",
+    r"\bуровн(и|ей)\s+кредитн\w*\s+рейтинг\w*\b",
+    r"\bпенсионн\w*|\bсоциальн\w*\s+страховани\w*|\bсфр\b|\bпфр\b",
+    r"\bфедеральн\w*\s+авиационн\w*\s+правил\w*|\bавиаци\w*\b",
+    r"\bшкол\w*|\bегэ\b|\bвуз\w*|\bстудент\w*|\bгимназ\w*|\bдетск\w*\s+сад\w*",
+    r"\bжкх\b|\bкапремонт\w*|\bуправляющ\w*\s+компан\w*|\bмногоквартирн\w*\s+дом\w*",
+    r"\bпраздник\w*|\bторжественн\w*|\bцеремони\w*|\bюбиле\w*|\bгодовщин\w*|\bпоздравлени\w*",
+    r"\bвсу\b|\bсво\b|\bтеракт\w*|\bтерроризм\w*|\bуголовн\w*\s+дело\b|\bарест\w*\b|\bколони\w*\b|\bприговор\w*\b",
+]
+
+
+def _match_any(patterns: list[str], text: str) -> bool:
+    for p in patterns:
+        if re.search(p, text, flags=re.IGNORECASE):
+            return True
+    return False
+
+
 def is_relevant(source_id: str, title: str, url: str) -> bool:
     t = (title or "").strip().lower()
     u = (url or "").strip().lower()
 
-    # жёсткие исключения (всем)
+    # 1) жёсткие исключения (всем)
     for pat in EXCLUDE_TITLE_PATTERNS:
         if re.search(pat, t, flags=re.IGNORECASE):
             return False
 
-    # ЦБ: у тебя источники cbr_events и cbr_press (а не cbr_news)
+    # 2) ЦБ: у тебя источники cbr_events и cbr_press (а не cbr_news)
     if source_id in ("cbr_events", "cbr_press"):
         for h in CBR_ALLOW_URL_HINTS:
             if h.lower() in u:
@@ -83,9 +145,26 @@ def is_relevant(source_id: str, title: str, url: str) -> bool:
                 return True
         return False
 
-    # D-Russia: режем шум
+    # 3) D-Russia: режем шум
     if source_id.startswith("drussia_"):
         return any(h in t for h in DRUSSIA_ALLOW_HINTS)
 
-    # для остальных: если не попало в исключения — оставляем
+    # 4) Consultant: максимально жестко (чтобы не засорять дайджест)
+    if source_id.startswith("consultant_"):
+        s = f"{t} {u}".strip()
+
+        # allowlist пробивает всё (включая “русский язык”)
+        if _match_any(CONSULTANT_ALLOWLIST_PATTERNS, s):
+            return True
+
+        # явный мусор
+        if _match_any(CONSULTANT_HARD_DENY, s):
+            return False
+
+        # иначе: интерес + юридический триггер
+        has_interest = _match_any(CONSULTANT_INTEREST_HINTS, s)
+        has_legal = _match_any(CONSULTANT_LEGAL_TRIGGERS, s)
+        return bool(has_interest and has_legal)
+
+    # 5) для остальных: если не попало в исключения — оставляем
     return True

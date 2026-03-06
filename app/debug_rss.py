@@ -3,10 +3,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from collections import Counter
-from typing import Any
 
 from app.sources import SOURCES
-from app.fetch_rss import fetch_rss
+from app.fetch_rss import fetch_items
 
 
 def _fmt_dt(dt) -> str:
@@ -19,15 +18,15 @@ def _fmt_dt(dt) -> str:
 
 
 def main(limit_per_source: int = 20) -> None:
-    print(f"RSS DEBUG • {datetime.now().astimezone().strftime('%Y-%m-%d %H:%M %z')}")
+    print(f"FEEDS DEBUG • {datetime.now().astimezone().strftime('%Y-%m-%d %H:%M %z')}")
     print("")
 
     for s in SOURCES:
-        print(f"=== {s['source_name']} ({s['source_id']}) ===")
+        print(f"=== {s['source_name']} ({s['source_id']}) kind={s.get('kind','rss')} ===")
         try:
-            items = fetch_rss(s["url"], s["source_id"], s["source_name"])
+            items = fetch_items(s)
         except Exception as e:
-            print(f"[RSS ERROR] {s['source_name']}: {e}")
+            print(f"[ERROR] {s['source_name']}: {e}")
             print("")
             continue
 
@@ -45,7 +44,6 @@ def main(limit_per_source: int = 20) -> None:
         else:
             print(f"published_at: none | no_dt={no_dt}")
 
-        # частоты по доменам (полезно понять, куда реально ведут ссылки)
         domains = []
         for it in items:
             url = (it.get("canonical_url") or it.get("url") or "").strip()

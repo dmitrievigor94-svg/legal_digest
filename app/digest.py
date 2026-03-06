@@ -6,6 +6,7 @@ from collections import defaultdict
 from typing import Optional, Tuple
 
 import html
+import os
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -22,39 +23,116 @@ EVENT_ORDER = [
 ]
 
 EVENT_TITLES = {
-    "LAW_DRAFT": "ЗАКОНОПРОЕКТЫ / ПРОЕКТЫ НПА",
-    "LAW_ADOPTED": "ПРИНЯТО / ОПУБЛИКОВАНО",
-    "GUIDANCE": "РАЗЪЯСНЕНИЯ / ПОЗИЦИИ",
-    "ENFORCEMENT": "КОНТРОЛЬ / ШТРАФЫ / ДЕЛА",
-    "COURTS": "СУДЕБНАЯ ПРАКТИКА",
-    "MARKET_CASES": "КЕЙСЫ РЫНКА",
+    "LAW_DRAFT": "Проекты НПА",
+    "LAW_ADOPTED": "Законы и подзаконные акты",
+    "GUIDANCE": "Разъяснения регулятора",
+    "ENFORCEMENT": "Административная практика",
+    "COURTS": "Судебная практика",
+    "MARKET_CASES": "Иное на рынке",
 }
 
 TG_SUMMARY_MAX_CHARS = 320
-TG_MAX_PER_SECTION = 25  # можно поднять/опустить
+TG_MAX_PER_SECTION = 25
 
-OFFICIAL_SOURCES = {
-    "fas_news", "fas_acts", "fas_clarifications", "fas_analytics", "fas_media",
-    "cbr_events", "cbr_press",
-    "rkn_news", "fstec_news", "pravo_gov", "regulation_gov",
-}
 
-MEDIA_SOURCES = {"drussia_all", "rapsi_judicial", "rapsi_publications"}
+def _dbg_enabled() -> bool:
+    return os.getenv("DIGEST_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _pass_threshold(a: Article) -> bool:
     """
-    Средняя точность:
-    - official: score>=1
-    - media: score>=4
-    - если score ещё None (старые записи) — пропускаем, чтобы не "обнулить" историю
-    """
-    if a.score is None:
-        return True
+    ГЛАВНОЕ:
+    - если у статьи есть a.keep (новая логика) -> используем ТОЛЬКО keep
+    - иначе fallback на старую логику (score)
 
-    if a.source_id in MEDIA_SOURCES:
-        return a.score >= 4
+    ВАЖНОЕ ИЗМЕНЕНИЕ:
+    - если keep is None и score is None -> НЕ пропускаем (раньше пропускало и давало мусор)
+    """
+    keep = getattr(a, "keep", None)
+    if keep is not None:
+        return bool(keep)
+
+    # legacy fallback (если keep ещё нет в БД/модели)
+    if a.score is None:
+        return False
     return a.score >= 1
+
+
+def _decision_reasons(a: Article, window: Optional[Tuple[datetime, datetime]]) -> tuple[bool, list[str]]:
+    reasons: list[str] = []
+
+    # 0) только обработанные
+    if a.fetched_at is None:
+        return False, ["not_processed: fetched_at is None"]
+
+    # 1) окно дат
+    if window is not None:
+        start, end = window
+        if a.published_at is None:
+            return False, ["no_published_at (window enabled)"]
+        if not (start <= a.published_at < end):
+            return (
+                False,
+                [f"out_of_window: {a.published_at.isoformat()} not in [{start.isoformat()}..{end.isoformat()})"],
+            )
+        reasons.append("in_window")
+
+    # 2) решение keep/score
+    keep = getattr(a, "keep", None)
+    if keep is not None:
+        if keep:
+            reasons.append("keep=True (classifier)")
+            ok = True
+        else:
+            return False, ["keep=False (classifier)"]
+    else:
+        # legacy
+        if a.score is None:
+            return False, ["score=None (legacy fail)"]
+        if a.score >= 1:
+            reasons.append(f"legacy score={a.score} >=1")
+            ok = True
+        else:
+            return False, [f"legacy score={a.score} <1"]
+
+    # 3) event/topic fallback
+    if not a.event_type and not a.topic:
+        reasons.append("no event_type/topic (will fallback to MARKET_CASES)")
+
+    return ok, reasons
+
+
+def _dbg_print_decisions(decisions: list[tuple[Article, bool, list[str]]], max_lines: int = 80) -> None:
+    total = len(decisions)
+    in_cnt = sum(1 for _, ok, _ in decisions if ok)
+    out_cnt = total - in_cnt
+
+    print(f"[DIGEST_DEBUG] decisions: total={total} IN={in_cnt} OUT={out_cnt}")
+
+    # сначала OUT
+    ordered = sorted(decisions, key=lambda x: (x[1],), reverse=False)
+
+    shown = 0
+    for a, ok, reasons in ordered:
+        if shown >= max_lines:
+            print(f"[DIGEST_DEBUG] ... truncated, shown={max_lines} of {total}")
+            break
+
+        et = a.event_type or "-"
+        src = a.source_id or "-"
+        sc = "None" if a.score is None else str(a.score)
+        kp = getattr(a, "keep", None)
+        kp_s = "None" if kp is None else ("True" if kp else "False")
+        dt = a.published_at.isoformat() if a.published_at else "None"
+        ttl = (a.title or "").strip().replace("\n", " ")
+        if len(ttl) > 140:
+            ttl = ttl[:137] + "..."
+
+        verdict = "IN " if ok else "OUT"
+        print(f"[DIGEST_DEBUG] {verdict} | {dt} | src={src} keep={kp_s} score={sc} event={et} | {ttl}")
+        for r in reasons:
+            print(f"             - {r}")
+        shown += 1
 
 
 def get_articles_for_digest(
@@ -62,23 +140,35 @@ def get_articles_for_digest(
     limit: int = 800,
     window: Optional[Tuple[datetime, datetime]] = None,
 ) -> list[Article]:
+    # ВАЖНО: берём только обработанные (fetched_at != None),
+    # иначе в дайджест попадёт "сырьё" без keep/event_type.
     q = (
         select(Article)
-        # .where(Article.sent_at.is_(None))  # ВРЕМЕННО ОТКЛЮЧЕНО: шлём повторно всё
+        .where(Article.fetched_at.is_not(None))
         .order_by(Article.published_at.desc().nullslast(), Article.created_at.desc())
         .limit(limit)
     )
     rows = db.execute(q).scalars().all()
 
-    # окно по дате
-    if window is not None:
-        start, end = window
-        rows = [a for a in rows if a.published_at is not None and start <= a.published_at < end]
+    if not _dbg_enabled():
+        if window is not None:
+            start, end = window
+            rows = [a for a in rows if a.published_at is not None and start <= a.published_at < end]
+        rows = [a for a in rows if _pass_threshold(a)]
+        return rows
 
-    # scoring-фильтр
-    rows = [a for a in rows if _pass_threshold(a)]
+    # debug режим
+    decisions: list[tuple[Article, bool, list[str]]] = []
+    filtered: list[Article] = []
 
-    return rows
+    for a in rows:
+        ok, reasons = _decision_reasons(a, window)
+        decisions.append((a, ok, reasons))
+        if ok:
+            filtered.append(a)
+
+    _dbg_print_decisions(decisions, max_lines=int(os.getenv("DIGEST_DEBUG_MAX", "80")))
+    return filtered
 
 
 def build_telegram_digest_blocks(
@@ -100,7 +190,7 @@ def build_telegram_digest_blocks(
 
     grouped: dict[str, list[Article]] = defaultdict(list)
     for a in rows:
-        key = (a.event_type or a.topic or "MARKET_CASES")  # fallback
+        key = (a.event_type or a.topic or "MARKET_CASES")
         grouped[key].append(a)
 
     first_section = True
@@ -111,23 +201,23 @@ def build_telegram_digest_blocks(
             continue
 
         if not first_section:
-            lines.append("")  # один пустой абзац между секциями
-
+            lines.append("")
         lines.append(f"<b>{html.escape(EVENT_TITLES.get(event_type, event_type))}</b>")
         lines.append("")
-
         first_section = False
 
-        # сортировка уже в запросе, но на всякий случай
         items_sorted = sorted(
             items,
             key=lambda a: (
                 a.published_at is None,
-                a.published_at or datetime.min.replace(tzinfo=datetime.now().astimezone().tzinfo),
+                a.published_at
+                or datetime.min.replace(tzinfo=datetime.now().astimezone().tzinfo),
                 a.created_at,
             ),
             reverse=True,
-        )[:TG_MAX_PER_SECTION]
+        )
+
+        items_sorted = items_sorted[:TG_MAX_PER_SECTION]
 
         for i, a in enumerate(items_sorted, start=1):
             url = (a.canonical_url or a.url or "").strip()
@@ -135,7 +225,7 @@ def build_telegram_digest_blocks(
             ttl_html = html.escape(ttl)
 
             if url:
-                line = f"{i}. <a href=\"{html.escape(url)}\">{ttl_html}</a>"
+                line = f'{i}. <a href="{html.escape(url)}">{ttl_html}</a>'
             else:
                 line = f"{i}. {ttl_html}"
 
@@ -148,7 +238,7 @@ def build_telegram_digest_blocks(
                 lines.append(f"<blockquote>{html.escape(s)}</blockquote>")
 
             if i != len(items_sorted):
-                lines.append("")  # один пустой абзац между новостями
+                lines.append("")
 
     article_ids = [a.id for a in rows if a.id is not None]
     return ("\n".join(lines), article_ids)
