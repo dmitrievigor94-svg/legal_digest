@@ -86,7 +86,7 @@ HARD_DENY_ALWAYS = [
     r"\bлишени\w*\s+статус\w*\s+арбитр\w*\b",
     r"\bпо\s+делу\s+о\s+проверке\s+конституционност\w*.*\bналогов\w*\s+кодекс\w*\b",
 
-    # новое: мелкая ерунда / таможенная бытовуха
+    # мелкая ерунда / таможенная бытовуха
     r"\bперекрывш\w*\s+дорог\w*\s+мусоровоз\w*\b",
     r"\bметеорит\w*\b.*\bдуба\w*\b|\bдронино\b.*\bдуба\w*\b",
 ]
@@ -116,6 +116,18 @@ GENERAL_NOISE_DENY = [
     r"\b(совещан\w*|встрече\s+с|конференц\w*|форум\w*|выставк\w*|кругл(ый|ого)\s+стол)\b",
     r"\b(день\s+[а-я]+|недел[яи]\s+[а-я]+)\b",
     r"\b(тематическ\w*\s+цикл|материал\w*\s+цикл|историческ\w*|в\s+\d+\s+материал\w*)\b",
+]
+
+# Отдельный policy-noise блок под правительственные стратегии/направления/программы,
+# которые не являются конкретным legal alert signal
+GOV_POLICY_NOISE_DENY = [
+    r"\bстратегическ\w*\s+направлен\w*\b",
+    r"\bцифров\w*\s+трансформац\w*\b",
+    r"\bактуализировал\w*\b.*\bстратегическ\w*\s+направлен\w*\b",
+    r"\bпрограмм\w*\s+развити\w*\b",
+    r"\bдорожн\w*\s+карт\w*\b",
+    r"\bконцепц\w*\s+развити\w*\b",
+    r"\bдо\s+2030\s+года\b.*\b(трансформац\w*|развити\w*|стратегическ\w*)\b",
 ]
 
 
@@ -191,7 +203,17 @@ RE_ENF_STRONG_VERB = re.compile(
 )
 
 RE_PDN = re.compile(r"\b(персональн(ые|ых)\s+данн\w*|152(?:-| )?фз|роскомнадзор|утечк\w*|биометри\w*)\b", re.I)
-RE_IP = re.compile(r"\b(товарн\w*\s+знак|патент\w*|авторск\w*\s+прав\w*|роспатент|сип\b|интеллектуальн\w*\s+собственност\w*)\b", re.I)
+RE_IP = re.compile(
+    r"\b("
+    r"товарн\w*\s+знак|знак\w*\s+обслуживан\w*|"
+    r"патент\w*|авторск\w*\s+прав\w*|"
+    r"роспатент|сип\b|интеллектуальн\w*\s+собственност\w*|"
+    r"правов\w*\s+охран\w*\s+товарн\w*\s+знак\w*|"
+    r"регистрац\w*\s+товарн\w*\s+знак\w*|"
+    r"бренд\w*"
+    r")\b",
+    re.I,
+)
 RE_COMP = re.compile(r"\b(конкуренц\w*|антимонопольн\w*|доминирован\w*|картел\w*|торг(и|ов)\b|закупк\w*|преференц\w*)\b", re.I)
 RE_ADS = re.compile(r"\b(реклам\w*|маркировк\w*)\b", re.I)
 RE_BANK = re.compile(
@@ -249,6 +271,7 @@ CONSULTANT_JUNK_HINTS = [
     r"\bпо\s+делу\s+о\s+проверке\s+конституционност\w*.*\bналогов\w*\s+кодекс\w*\b",
 ]
 
+
 def _consultant_should_keep(source_id: str, s: str, event: str, tags: list[str]) -> bool:
     if not source_id.startswith("consultant_"):
         return True
@@ -262,21 +285,33 @@ def _consultant_should_keep(source_id: str, s: str, event: str, tags: list[str])
     return False
 
 
-def _threshold(source_id: str, event: str) -> int:
+def _threshold(source_id: str, event: str, tags: list[str] | None = None) -> int:
+    tags = tags or []
+
     if _is_official(source_id):
         if event in (LAW_ADOPTED, LAW_DRAFT, ENFORCEMENT, GUIDANCE):
             return 2
         if event == COURTS:
+            return 3
+        if event == MARKET and ip in tags:
             return 3
         return 4
 
     if source_id.startswith("rapsi_"):
         if event in (COURTS, ENFORCEMENT, LAW_ADOPTED, LAW_DRAFT, GUIDANCE):
             return 5
+        if event == MARKET and ip in tags:
+            return 5
         return 7
 
     if source_id.startswith("drussia_") or source_id == "fas_media":
+        if event == MARKET and ip in tags:
+            return 6
         return 7
+
+    # прочие медийные / mixed источники: IP-рыночные материалы делаем чуть проходимее
+    if event == MARKET and ip in tags:
+        return 5
 
     return 6
 
@@ -311,11 +346,11 @@ def _detect_event(source_id: str, s: str) -> str:
 
             r"\b(признал|отменил|оставил\s+в\s+силе|не\s+пересмотрит|обязал|взыскал|разъяснил|защитил)\b"
             r".{0,80}"
-            r"\b(верховн(ый|ого)\s+суд|вс\s+рф|конституционн(ый|ого)\s+суд|кс\s+рф|арбитраж\w*|суд)\b",
+            r"\b(верховн(ый|ого)\s+суд|вс(?:\s+рф)?|конституционн(ый|ого)\s+суд|кс(?:\s+рф)?|арбитраж\w*|суд)\b",
         ],
         s,
     ):
-        return COURTS    
+        return COURTS
 
     if RE_LAW_ADOPTED.search(s):
         return LAW_ADOPTED
@@ -363,6 +398,19 @@ def _extract_tags_and_boost(s: str) -> tuple[list[str], int]:
         boost += 2
 
     if _m(r"\b(блокировк\w*\s+счет\w*|115(?:-| )?фз|финмониторинг\w*)\b", s):
+        boost += 2
+
+    # Усиливаем рыночные IP-материалы: регистрация знака, правовая охрана, Роспатент
+    if _any(
+        [
+            r"\bроспатент\b",
+            r"\bзарегистрировал\w*\b.*\bтоварн\w*\s+знак\w*\b",
+            r"\bтоварн\w*\s+знак\w*\b.*\bзарегистрирован\w*\b",
+            r"\bпредоставлен\w*\s+правов\w*\s+охран\w*\b",
+            r"\bправов\w*\s+охран\w*\b.*\bтоварн\w*\s+знак\w*\b",
+        ],
+        s,
+    ):
         boost += 2
 
     return tags, boost
@@ -431,8 +479,30 @@ def classify(source_id: str, title: str, text: str = "", url: str = "") -> Class
     if _any(HARD_DENY_ALWAYS, s):
         return Classified(False, -10, MARKET, [])
 
+    # policy-noise по правительственным стратегиям/направлениям/программам:
+    # режем только если это не конкретный legal signal
+    if source_id == "gov_all" and _any(GOV_POLICY_NOISE_DENY, s):
+        if not _any(
+            [
+                r"\bзаконопроект\b",
+                r"\bпроект\s+постановлени\w*\b",
+                r"\bпроект\s+приказ\w*\b",
+                r"\bофициальн\w*\s+опубликован\w*\b",
+                r"\bвступа(ет|ют)\s+в\s+силу\b",
+                r"\bразъяснен\w*\b",
+                r"\bрекомендац\w*\b",
+                r"\bпредписан\w*\b",
+                r"\bштраф\w*\b",
+                r"\bпровер(к|я|ка)\b",
+                r"\bсуд\b|\bарбитраж\w*\b|\bкассац\w*\b|\bапелляц\w*\b",
+            ],
+            s,
+        ):
+            return Classified(False, -10, MARKET, [])
+
     if _any(PROTO_DENY, s) or _any(GENERAL_NOISE_DENY, s):
         return Classified(False, -10, MARKET, [])
+
     if _any(REPORTING_DENY, s) and _is_media(source_id):
         return Classified(False, -10, MARKET, [])
 
@@ -454,7 +524,7 @@ def classify(source_id: str, title: str, text: str = "", url: str = "") -> Class
     if event == ENFORCEMENT and RE_ENF_STRONG_VERB.search(s):
         score += 1
 
-    thr = _threshold(source_id, event)
+    thr = _threshold(source_id, event, tags)
     keep = score >= thr
 
     return Classified(keep, score, event, tags)
