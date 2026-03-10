@@ -1,7 +1,8 @@
+# app/db.py
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
-from app.config import settings  # если у тебя settings уже читает DB_* из env
+
 
 def build_db_url() -> str:
     # 1) приоритет — DATABASE_URL (сервер/Neon)
@@ -18,6 +19,7 @@ def build_db_url() -> str:
 
     return f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{name}"
 
+
 DATABASE_URL = build_db_url()
 
 engine = create_engine(
@@ -26,6 +28,7 @@ engine = create_engine(
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
 
 class Base(DeclarativeBase):
     pass

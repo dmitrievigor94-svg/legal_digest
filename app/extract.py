@@ -1,7 +1,9 @@
+# app/extract.py
 import httpx
 import trafilatura
 
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X) legal_digest/1.0"
+
 
 def fetch_and_extract_text(url: str) -> str | None:
     try:
@@ -26,9 +28,9 @@ def fetch_and_extract_text(url: str) -> str | None:
     if not text:
         return None
 
-    # чуть чистим пробелы
     text = " ".join(text.split())
     return text or None
+
 
 def make_short_summary(text: str, max_chars: int = 700) -> str:
     text = (text or "").strip()
@@ -36,13 +38,14 @@ def make_short_summary(text: str, max_chars: int = 700) -> str:
         return ""
     if len(text) <= max_chars:
         return text
-    return text[: max_chars - 1].rstrip() + "…"
+    # Fix #15: режем по границе слова, не посередине
+    return text[:max_chars].rsplit(' ', 1)[0].rstrip() + "…"
+
 
 def is_bad_extracted_text(text: str) -> bool:
     t = (text or "").lower()
     if not t:
         return True
-    # явные признаки меню/навигации
     bad_markers = [
         "о фас россии",
         "миссия, цели, ценности",
@@ -51,7 +54,8 @@ def is_bad_extracted_text(text: str) -> bool:
         "политика в области качества",
     ]
     hits = sum(1 for m in bad_markers if m in t)
-    return hits >= 2  # если совпали 2+ маркера — это почти точно не статья
+    return hits >= 2
+
 
 def clean_fas_text(text: str) -> str:
     if not text:
@@ -60,14 +64,12 @@ def clean_fas_text(text: str) -> str:
 
     cleaned = []
     for ln in lines:
-        # выкидываем типовой слоган/шапку
         if ln.lower().startswith("свобода конкуренции"):
             continue
         if ln.lower() == "свобода конкуренции и эффективная защита предпринимательства ради будущего россии":
             continue
         cleaned.append(ln)
 
-    # убираем подряд идущие дубли строк
     dedup = []
     prev = None
     for ln in cleaned:

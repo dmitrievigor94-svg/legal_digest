@@ -35,6 +35,9 @@ class Article(Base):
     sent_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Краткое описание содержания от LLM (1-2 предложения), выводится в дайджест
+    llm_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     topic: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     content_hash: Mapped[str] = mapped_column(String(64), index=True)

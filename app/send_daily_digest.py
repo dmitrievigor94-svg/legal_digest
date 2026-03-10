@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -19,12 +20,12 @@ from app.extract import (
     is_bad_extracted_text,
     clean_fas_text,
 )
-from app.classify import classify
+from app.classify_llm import classify          # ← заменили classify.py на classify_llm.py
 from app.models import Article
 from app.sources import SOURCES
 from app.published_at import fetch_published_at
 from app.notify_telegram import send_telegram_message_html
-from app.filtering import is_relevant  # фильтр на входе
+from app.filtering import is_relevant
 
 load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
 
@@ -35,10 +36,8 @@ def _env_on(name: str) -> bool:
 
 def _env_int(name: str, default: int = 0) -> int:
     v = (os.getenv(name, "") or "").strip()
-    if not v:
-        return default
     try:
-        return int(v)
+        return int(v) if v else default
     except Exception:
         return default
 
@@ -46,14 +45,23 @@ def _env_int(name: str, default: int = 0) -> int:
 def main() -> None:
     migrate()
 
+    # Проверяем ключ сразу — не хотим узнать об отсутствии через 5 минут работы
+    if not os.environ.get("GIGACHAT_AUTH_KEY", "").strip():
+        raise EnvironmentError("GIGACHAT_AUTH_KEY не задан — добавь в .env")
+
     reclassify_all = _env_on("RECLASSIFY_ALL")
     reclassify_days = _env_int("RECLASSIFY_DAYS", 0)
     refetch_text = _env_on("REFETCH_TEXT")
+    debug = _env_on("DIGEST_DEBUG")
+    debug_max = _env_int("DIGEST_DEBUG_MAX", 1000)
 
     with SessionLocal() as db:
-        # 1) fetch -> save (с фильтрацией до БД)
+
+        # -----------------------------------------------------------------
+        # 1) Fetch → save (с фильтрацией до БД)
+        # -----------------------------------------------------------------
+        now = datetime.now(timezone.utc)
         for s in SOURCES:
-            now = datetime.now(timezone.utc)
 
             try:
                 items_raw = fetch_items(s)
@@ -61,50 +69,55 @@ def main() -> None:
                 print(str(e))
                 continue
 
-            # режем мусор ДО сохранения
-            items_raw = [
-                it for it in items_raw
-                if is_relevant(
+            # Режем мусор ДО сохранения в БД
+            items_filtered = []
+            for it in items_raw:
+                keep = is_relevant(
                     it["source_id"],
                     it.get("title") or "",
                     it.get("canonical_url") or it.get("url") or "",
                 )
-            ]
+                if keep:
+                    items_filtered.append(it)
+                elif debug:
+                    print(f"  [FILTER] {it['source_id']} | {(it.get('title') or '')[:80]}")
+            items_raw = items_filtered
 
             cutoff_hours = int(s.get("cutoff_hours", 36) or 0)
             allow_no_date = bool(s.get("allow_no_date", False))
 
             if cutoff_hours > 0:
                 cutoff = now - timedelta(hours=cutoff_hours)
-
-                def _keep_by_cutoff(it: dict) -> bool:
-                    dt = it.get("published_at")
-                    if dt is None:
-                        return allow_no_date
-                    return dt >= cutoff
-
-                items = [it for it in items_raw if _keep_by_cutoff(it)]
+                items = [
+                    it for it in items_raw
+                    if (it.get("published_at") or None) is None and allow_no_date
+                    or (it.get("published_at") is not None and it["published_at"] >= cutoff)
+                ]
             else:
                 items = items_raw
 
-            save_new_articles(db, items)
+            created, existed = save_new_articles(db, items)
+            print(f"[OK] {s['source_name']} | new={created} existed={existed}")
 
-        # 2) enrich + classify
-        # ВАЖНО: НЕ режем limit=200, иначе часть статей остаётся keep=None/event_type=None и пролезает в дайджест.
+        # -----------------------------------------------------------------
+        # 2) Enrich + classify через Gemini
+        # -----------------------------------------------------------------
         q = select(Article).order_by(Article.created_at.desc())
 
         if reclassify_all:
             if reclassify_days > 0:
                 since = datetime.now(timezone.utc) - timedelta(days=reclassify_days)
                 q = q.where(Article.created_at >= since)
-            # иначе переклассифицируем всё (обычно после TRUNCATE это ок)
         else:
             q = q.where(Article.fetched_at.is_(None))
 
         to_process = db.execute(q).scalars().all()
+        if debug and debug_max and len(to_process) > debug_max:
+            to_process = to_process[:debug_max]
+            print(f"\n[DEBUG] ограничено до {debug_max} статей")
+        print(f"\nОбрабатываем {len(to_process)} статей через GigaChat...")
 
-        for a in to_process:
-            # рефетчим текст либо для новых, либо если явно включили REFETCH_TEXT
+        for i, a in enumerate(to_process, start=1):
             need_fetch = refetch_text or (a.fetched_at is None)
 
             if need_fetch:
@@ -112,7 +125,6 @@ def main() -> None:
                 if text:
                     if a.source_id.startswith("fas_"):
                         text = clean_fas_text(text)
-
                     a.raw_text = text
 
                     if a.published_at is None:
@@ -126,50 +138,100 @@ def main() -> None:
                 else:
                     a.summary = a.summary or ""
 
-            c = classify(a.source_id, a.title, a.raw_text or "", a.canonical_url)
+            # Классификация через GigaChat
+            c = classify(
+                a.source_id,
+                a.title,
+                a.raw_text or "",
+                a.canonical_url,
+                )
 
             a.event_type = c.event_type
             a.tags = c.tags
             a.score = c.score
             a.keep = c.keep
-            a.topic = a.event_type  # у тебя topic сейчас дубль event_type — оставляю как было
+            a.topic = c.event_type
+            if c.summary:
+                a.llm_summary = c.summary
 
-            # фиксируем "обработанность" (важно для digest.py: он берёт только fetched_at != None)
             if a.fetched_at is None or refetch_text or reclassify_all:
                 a.fetched_at = datetime.now(timezone.utc)
 
+            verdict = "✓" if c.keep else "✗"
+            if debug:
+                # debug: показываем всё, включая ✗ без reason
+                print(f"  {i}/{len(to_process)} {verdict} [{c.event_type}] [{a.source_id}] {a.title[:65]}")
+                if c.reason:
+                    print(f"     → {c.reason}")
+            elif c.keep or c.reason:
+                # обычный режим: только ✓ и ✗ с пояснением
+                print(f"  {i}/{len(to_process)} {verdict} [{c.event_type}] [{a.source_id}] {a.title[:65]}")
+                if c.reason:
+                    print(f"     → {c.reason}")
+            else:
+                # тихий прогресс каждые 10 статей
+                if i % 10 == 0 or i == len(to_process):
+                    print(f"  {i}/{len(to_process)} обработано...")
+
+            # Периодический commit — не терять прогресс при падении
+            if i % 50 == 0:
+                db.commit()
+
         db.commit()
+        print(f"\nОбработано: {len(to_process)}")
 
-        # 3) окно "вчера" в локальной TZ (за вчера календарно)
+        # -----------------------------------------------------------------
+        # 3) Окно дайджеста в локальной TZ
+        # По умолчанию — "вчера". Можно переопределить через DIGEST_DATE=2026-03-06
+        # -----------------------------------------------------------------
         local_tz = ZoneInfo(os.getenv("DIGEST_TZ", "Europe/Moscow"))
-        today_local = datetime.now(local_tz).date()
-        yesterday_local = today_local - timedelta(days=1)
 
-        start_local = datetime.combine(yesterday_local, datetime.min.time(), tzinfo=local_tz)
-        end_local = datetime.combine(today_local, datetime.min.time(), tzinfo=local_tz)
+        digest_date_str = os.getenv("DIGEST_DATE", "").strip()
+        if digest_date_str:
+            digest_date = datetime.strptime(digest_date_str, "%Y-%m-%d").date()
+        else:
+            digest_date = datetime.now(local_tz).date() - timedelta(days=1)
+
+        # Понедельник (weekday=0) — расширяем окно на пятницу+сб+вс (3 дня).
+        # Так все пятничные новости попадают в понедельничный дайджест.
+        # Праздничный день после выходных тоже обрабатывается правильно,
+        # если запуск происходит на следующий рабочий день.
+        if digest_date.weekday() == 0:  # понедельник
+            window_days = 3  # пт+сб+вс
+        else:
+            window_days = 1
+
+        end_local = datetime.combine(digest_date, datetime.max.time(), tzinfo=local_tz)
+        start_local = datetime.combine(digest_date - timedelta(days=window_days - 1),
+                                       datetime.min.time(), tzinfo=local_tz)
         window = (start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc))
 
         text, sent_ids = build_telegram_digest_blocks(db, limit=500, window=window)
         print(
-            f"[DIGEST] text_len={len(text)} sent_ids={len(sent_ids)} "
-            f"window_utc={window[0].isoformat()}..{window[1].isoformat()} "
-            f"reclassify_all={reclassify_all}"
+            f"\n[DIGEST] статей в дайджесте: {len(sent_ids)} "
+            f"| окно: {window[0].strftime('%d.%m %H:%M')}–{window[1].strftime('%d.%m %H:%M')} UTC"
         )
 
-        # 4) send
+        # -----------------------------------------------------------------
+        # 4) Отправка в Telegram
+        # -----------------------------------------------------------------
         if not sent_ids:
+            print("[TG] нечего отправлять")
             return
 
-        print("[TG] sending...")
+        print("[TG] отправляем...")
         send_telegram_message_html(text)
-        print("[TG] sent OK")
+        print("[TG] отправлено ✓")
 
-        # 5) mark sent
+        # -----------------------------------------------------------------
+        # 5) Помечаем как отправленное
+        # -----------------------------------------------------------------
         now = datetime.now(timezone.utc)
         rows = db.execute(select(Article).where(Article.id.in_(sent_ids))).scalars().all()
         for a in rows:
             a.sent_at = now
         db.commit()
+        print(f"Помечено sent_at: {len(sent_ids)}")
 
 
 if __name__ == "__main__":

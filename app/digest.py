@@ -1,7 +1,8 @@
 # app/digest.py
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from collections import defaultdict
 from typing import Optional, Tuple
 
@@ -13,26 +14,148 @@ from sqlalchemy.orm import Session
 
 from app.models import Article
 
-EVENT_ORDER = [
-    "LAW_DRAFT",
-    "LAW_ADOPTED",
-    "GUIDANCE",
-    "ENFORCEMENT",
-    "COURTS",
-    "MARKET_CASES",
+TAG_ORDER = [
+    "pdn",
+    "advertising",
+    "competition",
+    "banking",
+    "telecom",
+    "it_platforms",
+    "cybersecurity",
+    "ip",
+    "consumers",
+    "_other",  # без тегов или нераспознанные
 ]
 
-EVENT_TITLES = {
-    "LAW_DRAFT": "Проекты НПА",
-    "LAW_ADOPTED": "Законы и подзаконные акты",
-    "GUIDANCE": "Разъяснения регулятора",
-    "ENFORCEMENT": "Административная практика",
-    "COURTS": "Судебная практика",
-    "MARKET_CASES": "Иное на рынке",
+TAG_TITLES = {
+    "pdn":          "Персональные данные",
+    "advertising":  "Реклама",
+    "competition":  "Антимонопольное",
+    "banking":      "Банки и финансы",
+    "telecom":      "Телеком",
+    "it_platforms": "IT и платформы",
+    "cybersecurity":"Кибербезопасность",
+    "ip":           "Интеллектуальная собственность",
+    "consumers":    "Защита потребителей",
+    "_other":       "Прочее",
+}
+
+EVENT_BADGE = {
+    "LAW_DRAFT":    "📝",
+    "LAW_ADOPTED":  "📄",
+    "GUIDANCE":     "💬",
+    "ENFORCEMENT":  "🗃️",
+    "COURTS":       "⚖️",
+    "MARKET_CASES": "📊",
 }
 
 TG_SUMMARY_MAX_CHARS = 320
-TG_MAX_PER_SECTION = 25
+TG_MAX_PER_SECTION = 15
+TG_REASON_MAX_CHARS = 300
+
+# Fix #7: вынесено за пределы sort — не пересоздаётся для каждого элемента
+_FALLBACK_DT = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _article_tags(a: Article) -> list[str]:
+    """Возвращает список тегов статьи из поля tags (JSON list) или пустой список."""
+    raw = getattr(a, "tags", None)
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return [str(t) for t in raw]
+    if isinstance(raw, str):
+        import json
+        try:
+            return json.loads(raw)
+        except Exception:
+            return []
+    return []
+
+
+def build_telegram_digest_blocks(
+    db: Session,
+    limit: int = 500,
+    window: Optional[Tuple[datetime, datetime]] = None,
+) -> tuple[str, list[int]]:
+    rows = get_articles_for_digest(db, limit=max(limit, 800), window=window)
+
+    _digest_tz = ZoneInfo(os.getenv("DIGEST_TZ", "Europe/Moscow"))
+    # Дата дайджеста = вчера по МСК (или указанная через DIGEST_DATE)
+    _digest_date_env = os.getenv("DIGEST_DATE")
+    if _digest_date_env:
+        from datetime import date as _date
+        _digest_day = _date.fromisoformat(_digest_date_env)
+    else:
+        _digest_day = (datetime.now(_digest_tz) - timedelta(days=1)).date()
+    day_str = _digest_day.strftime("%d.%m.%Y")
+
+    lines: list[str] = []
+    lines.append(f"<b>Юридический дайджест за {html.escape(day_str)}</b>")
+
+    if not rows:
+        lines.append("")
+        lines.append("<i>Новых материалов нет.</i>")
+        return ("\n".join(lines), [])
+
+    # Группируем по первому тегу статьи (приоритет по TAG_ORDER)
+    grouped: dict[str, list[Article]] = defaultdict(list)
+    for a in rows:
+        tags = _article_tags(a)
+        placed = False
+        for tag in TAG_ORDER:
+            if tag in tags:
+                grouped[tag].append(a)
+                placed = True
+                break
+        if not placed:
+            grouped["_other"].append(a)
+
+    total = len(rows)
+    lines.append(f"<b>{total} материал{'а' if 2 <= total % 10 <= 4 and total % 100 not in range(11,15) else 'ов' if total % 10 != 1 else ''}</b>")
+
+    for tag in TAG_ORDER:
+        items = grouped.get(tag, [])
+        if not items:
+            continue
+
+        items_sorted = sorted(
+            items,
+            key=lambda a: (
+                a.published_at is not None,
+                a.published_at or _FALLBACK_DT,
+            ),
+            reverse=True,
+        )
+        items_sorted = items_sorted[:TG_MAX_PER_SECTION]
+
+        lines.append("")
+        lines.append(f"<b>{html.escape(TAG_TITLES[tag])}</b>")
+
+        for a in items_sorted:
+            url = (a.canonical_url or a.url or "").strip()
+            ttl = (a.title or "").strip()
+            badge = EVENT_BADGE.get(a.event_type or "", "")
+
+            # Заголовок со ссылкой
+            ttl_html = html.escape(ttl)
+            if url:
+                title_part = f'<a href="{html.escape(url)}">{ttl_html}</a>'
+            else:
+                title_part = ttl_html
+
+            line = f"{badge} {title_part}" if badge else f"{title_part}"
+            lines.append(line)
+
+            # llm_summary — краткое описание содержания от GigaChat
+            llm_s = (getattr(a, "llm_summary", None) or "").strip()
+            if llm_s:
+                if len(llm_s) > TG_REASON_MAX_CHARS:
+                    llm_s = llm_s[:TG_REASON_MAX_CHARS - 1].rstrip() + "…"
+                lines.append(html.escape(llm_s))
+
+    article_ids = [a.id for a in rows if a.id is not None]
+    return ("\n".join(lines), article_ids)
 
 
 def _dbg_enabled() -> bool:
@@ -40,19 +163,10 @@ def _dbg_enabled() -> bool:
 
 
 def _pass_threshold(a: Article) -> bool:
-    """
-    ГЛАВНОЕ:
-    - если у статьи есть a.keep (новая логика) -> используем ТОЛЬКО keep
-    - иначе fallback на старую логику (score)
-
-    ВАЖНОЕ ИЗМЕНЕНИЕ:
-    - если keep is None и score is None -> НЕ пропускаем (раньше пропускало и давало мусор)
-    """
     keep = getattr(a, "keep", None)
     if keep is not None:
         return bool(keep)
-
-    # legacy fallback (если keep ещё нет в БД/модели)
+    # legacy fallback
     if a.score is None:
         return False
     return a.score >= 1
@@ -61,11 +175,9 @@ def _pass_threshold(a: Article) -> bool:
 def _decision_reasons(a: Article, window: Optional[Tuple[datetime, datetime]]) -> tuple[bool, list[str]]:
     reasons: list[str] = []
 
-    # 0) только обработанные
     if a.fetched_at is None:
         return False, ["not_processed: fetched_at is None"]
 
-    # 1) окно дат
     if window is not None:
         start, end = window
         if a.published_at is None:
@@ -77,7 +189,6 @@ def _decision_reasons(a: Article, window: Optional[Tuple[datetime, datetime]]) -
             )
         reasons.append("in_window")
 
-    # 2) решение keep/score
     keep = getattr(a, "keep", None)
     if keep is not None:
         if keep:
@@ -86,7 +197,6 @@ def _decision_reasons(a: Article, window: Optional[Tuple[datetime, datetime]]) -
         else:
             return False, ["keep=False (classifier)"]
     else:
-        # legacy
         if a.score is None:
             return False, ["score=None (legacy fail)"]
         if a.score >= 1:
@@ -95,7 +205,6 @@ def _decision_reasons(a: Article, window: Optional[Tuple[datetime, datetime]]) -
         else:
             return False, [f"legacy score={a.score} <1"]
 
-    # 3) event/topic fallback
     if not a.event_type and not a.topic:
         reasons.append("no event_type/topic (will fallback to MARKET_CASES)")
 
@@ -109,7 +218,6 @@ def _dbg_print_decisions(decisions: list[tuple[Article, bool, list[str]]], max_l
 
     print(f"[DIGEST_DEBUG] decisions: total={total} IN={in_cnt} OUT={out_cnt}")
 
-    # сначала OUT
     ordered = sorted(decisions, key=lambda x: (x[1],), reverse=False)
 
     shown = 0
@@ -140,8 +248,6 @@ def get_articles_for_digest(
     limit: int = 800,
     window: Optional[Tuple[datetime, datetime]] = None,
 ) -> list[Article]:
-    # ВАЖНО: берём только обработанные (fetched_at != None),
-    # иначе в дайджест попадёт "сырьё" без keep/event_type.
     q = (
         select(Article)
         .where(Article.fetched_at.is_not(None))
@@ -157,7 +263,9 @@ def get_articles_for_digest(
         rows = [a for a in rows if _pass_threshold(a)]
         return rows
 
-    # debug режим
+    # debug режим — отдельная переменная чтобы не конфликтовать с DIGEST_DEBUG_MAX
+    # который в send_daily_digest используется для ограничения LLM-запросов
+    debug_print_max = int(os.getenv("DIGEST_DEBUG_PRINT_MAX", "80"))
     decisions: list[tuple[Article, bool, list[str]]] = []
     filtered: list[Article] = []
 
@@ -167,78 +275,5 @@ def get_articles_for_digest(
         if ok:
             filtered.append(a)
 
-    _dbg_print_decisions(decisions, max_lines=int(os.getenv("DIGEST_DEBUG_MAX", "80")))
+    _dbg_print_decisions(decisions, max_lines=debug_print_max)
     return filtered
-
-
-def build_telegram_digest_blocks(
-    db: Session,
-    limit: int = 500,
-    window: Optional[Tuple[datetime, datetime]] = None,
-) -> tuple[str, list[int]]:
-    rows = get_articles_for_digest(db, limit=max(limit, 800), window=window)
-
-    day_str = datetime.now().astimezone().strftime("%d.%m.%Y")
-
-    lines: list[str] = []
-    lines.append(f"<b>Юридический дайджест</b> • <b>{html.escape(day_str)}</b>")
-    lines.append("")
-
-    if not rows:
-        lines.append("<i>Новых материалов нет.</i>")
-        return ("\n".join(lines), [])
-
-    grouped: dict[str, list[Article]] = defaultdict(list)
-    for a in rows:
-        key = (a.event_type or a.topic or "MARKET_CASES")
-        grouped[key].append(a)
-
-    first_section = True
-
-    for event_type in EVENT_ORDER:
-        items = grouped.get(event_type, [])
-        if not items:
-            continue
-
-        if not first_section:
-            lines.append("")
-        lines.append(f"<b>{html.escape(EVENT_TITLES.get(event_type, event_type))}</b>")
-        lines.append("")
-        first_section = False
-
-        items_sorted = sorted(
-            items,
-            key=lambda a: (
-                a.published_at is None,
-                a.published_at
-                or datetime.min.replace(tzinfo=datetime.now().astimezone().tzinfo),
-                a.created_at,
-            ),
-            reverse=True,
-        )
-
-        items_sorted = items_sorted[:TG_MAX_PER_SECTION]
-
-        for i, a in enumerate(items_sorted, start=1):
-            url = (a.canonical_url or a.url or "").strip()
-            ttl = (a.title or "").strip()
-            ttl_html = html.escape(ttl)
-
-            if url:
-                line = f'{i}. <a href="{html.escape(url)}">{ttl_html}</a>'
-            else:
-                line = f"{i}. {ttl_html}"
-
-            lines.append(line)
-
-            s = (a.summary or "").strip()
-            if s:
-                if len(s) > TG_SUMMARY_MAX_CHARS:
-                    s = s[: TG_SUMMARY_MAX_CHARS - 1].rstrip() + "…"
-                lines.append(f"<blockquote>{html.escape(s)}</blockquote>")
-
-            if i != len(items_sorted):
-                lines.append("")
-
-    article_ids = [a.id for a in rows if a.id is not None]
-    return ("\n".join(lines), article_ids)
