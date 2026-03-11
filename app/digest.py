@@ -53,7 +53,6 @@ TG_SUMMARY_MAX_CHARS = 320
 TG_MAX_PER_SECTION = 15
 TG_REASON_MAX_CHARS = 300
 
-# Fix #7: вынесено за пределы sort — не пересоздаётся для каждого элемента
 _FALLBACK_DT = datetime.min.replace(tzinfo=timezone.utc)
 
 
@@ -81,7 +80,6 @@ def build_telegram_digest_blocks(
     rows = get_articles_for_digest(db, limit=max(limit, 800), window=window)
 
     _digest_tz = ZoneInfo(os.getenv("DIGEST_TZ", "Europe/Moscow"))
-    # Дата дайджеста = вчера по МСК (или указанная через DIGEST_DATE)
     _digest_date_env = os.getenv("DIGEST_DATE")
     if _digest_date_env:
         from datetime import date as _date
@@ -132,10 +130,16 @@ def build_telegram_digest_blocks(
         lines.append("")
         lines.append(f"<b>{html.escape(TAG_TITLES[tag])}</b>")
 
-        for a in items_sorted:
+        for idx, a in enumerate(items_sorted):
             url = (a.canonical_url or a.url or "").strip()
             ttl = (a.title or "").strip()
+            if len(ttl) > 100:
+                ttl = ttl[:99].rstrip() + "…"
             badge = EVENT_BADGE.get(a.event_type or "", "")
+
+            # Пустая строка между новостями (не перед первой — там уже есть заголовок секции)
+            if idx > 0:
+                lines.append("")
 
             # Заголовок со ссылкой
             ttl_html = html.escape(ttl)
@@ -152,7 +156,7 @@ def build_telegram_digest_blocks(
             if llm_s:
                 if len(llm_s) > TG_REASON_MAX_CHARS:
                     llm_s = llm_s[:TG_REASON_MAX_CHARS - 1].rstrip() + "…"
-                lines.append(html.escape(llm_s))
+                lines.append(f"<blockquote>{html.escape(llm_s)}</blockquote>")
 
     article_ids = [a.id for a in rows if a.id is not None]
     return ("\n".join(lines), article_ids)
@@ -263,8 +267,6 @@ def get_articles_for_digest(
         rows = [a for a in rows if _pass_threshold(a)]
         return rows
 
-    # debug режим — отдельная переменная чтобы не конфликтовать с DIGEST_DEBUG_MAX
-    # который в send_daily_digest используется для ограничения LLM-запросов
     debug_print_max = int(os.getenv("DIGEST_DEBUG_PRINT_MAX", "80"))
     decisions: list[tuple[Article, bool, list[str]]] = []
     filtered: list[Article] = []
