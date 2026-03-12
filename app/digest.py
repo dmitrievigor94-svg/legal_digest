@@ -150,7 +150,7 @@ def build_telegram_digest_blocks(
         items_sorted = items_sorted[:TG_MAX_PER_SECTION]
 
         lines.append("")
-        lines.append(f"<b>{html.escape(TAG_TITLES[tag])}</b>")
+        lines.append(f"<b>→ {html.escape(TAG_TITLES[tag])}</b>")
 
         for a in items_sorted:
             url = (a.canonical_url or a.url or "").strip()

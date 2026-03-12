@@ -4,7 +4,7 @@ import time as _time
 import httpx
 
 TG_API = "https://api.telegram.org/bot{token}/{method}"
-MAX_LEN = 3900
+MAX_LEN = 4000
 
 
 def _split_html_text(text: str, max_len: int = MAX_LEN):
