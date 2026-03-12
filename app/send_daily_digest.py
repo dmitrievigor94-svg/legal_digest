@@ -100,7 +100,7 @@ def main() -> None:
             print(f"[OK] {s['source_name']} | new={created} existed={existed}")
 
         # -----------------------------------------------------------------
-        # 2) Enrich + classify через Gemini
+        # 2) Enrich + classify через GigaChat
         # -----------------------------------------------------------------
         q = select(Article).order_by(Article.created_at.desc())
 
@@ -125,17 +125,30 @@ def main() -> None:
                 if text:
                     if a.source_id.startswith("fas_"):
                         text = clean_fas_text(text)
-                    a.raw_text = text
+                    if not text:
+                        if debug:
+                            print(f"     [EMPTY AFTER CLEAN] {a.canonical_url[:70]}")
+                        a.summary = a.summary or ""
+                    else:
+                        a.raw_text = text
 
-                    if a.published_at is None:
+                    if text and a.published_at is None:
                         dt = fetch_published_at(a.canonical_url)
                         if dt and (dt.year < 2023 or dt.year > datetime.now(timezone.utc).year + 1):
                             dt = None
                         if dt:
                             a.published_at = dt
 
-                    a.summary = "" if is_bad_extracted_text(text) else make_short_summary(text, max_chars=700)
+                    if text:
+                        if is_bad_extracted_text(text):
+                            if debug:
+                                print(f"     [BAD TEXT] len={len(text)} {a.canonical_url[:70]}")
+                            a.summary = ""
+                        else:
+                            a.summary = make_short_summary(text, max_chars=700)
                 else:
+                    if debug:
+                        print(f"     [NO TEXT] {a.canonical_url[:80]}")
                     a.summary = a.summary or ""
 
             # Классификация через GigaChat

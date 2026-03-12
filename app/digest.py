@@ -137,10 +137,6 @@ def build_telegram_digest_blocks(
                 ttl = ttl[:99].rstrip() + "…"
             badge = EVENT_BADGE.get(a.event_type or "", "")
 
-            # Пустая строка между новостями (не перед первой — там уже есть заголовок секции)
-            if idx > 0:
-                lines.append("")
-
             # Заголовок со ссылкой
             ttl_html = html.escape(ttl)
             if url:

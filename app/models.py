@@ -23,7 +23,7 @@ class Article(Base):
     score: Mapped[int | None] = mapped_column(nullable=True)
 
     # было 512 — мало
-    title: Mapped[str] = mapped_column(String(1024))
+    title: Mapped[str] = mapped_column(Text)
 
     url: Mapped[str] = mapped_column(Text)
     canonical_url: Mapped[str] = mapped_column(Text)
