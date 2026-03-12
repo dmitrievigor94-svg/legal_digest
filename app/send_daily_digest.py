@@ -152,10 +152,13 @@ def main() -> None:
                     a.summary = a.summary or ""
 
             # Классификация через GigaChat
+            # Если raw_text не вытащился (сайт заблокирован/reCAPTCHA),
+            # передаём RSS summary как fallback — лучше, чем пустая строка
+            classify_text = a.raw_text or a.summary or ""
             c = classify(
                 a.source_id,
                 a.title,
-                a.raw_text or "",
+                classify_text,
                 a.canonical_url,
                 )
 

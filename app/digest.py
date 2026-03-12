@@ -72,6 +72,28 @@ def _article_tags(a: Article) -> list[str]:
     return []
 
 
+def _best_summary(a: Article, max_chars: int) -> str:
+    """
+    Выбирает лучший доступный текст для показа под заголовком:
+    1. llm_summary — написан GigaChat, содержит конкретику сверх заголовка
+    2. summary — make_short_summary из извлечённого текста страницы
+    Возвращает пустую строку если ничего нет.
+    """
+    llm_s = (getattr(a, "llm_summary", None) or "").strip()
+    if llm_s:
+        if len(llm_s) > max_chars:
+            llm_s = llm_s[:max_chars - 1].rstrip() + "…"
+        return llm_s
+
+    page_s = (getattr(a, "summary", None) or "").strip()
+    if page_s:
+        if len(page_s) > max_chars:
+            page_s = page_s[:max_chars - 1].rstrip() + "…"
+        return page_s
+
+    return ""
+
+
 def build_telegram_digest_blocks(
     db: Session,
     limit: int = 500,
@@ -89,12 +111,15 @@ def build_telegram_digest_blocks(
     day_str = _digest_day.strftime("%d.%m.%Y")
 
     lines: list[str] = []
-    lines.append(f"<b>Юридический дайджест за {html.escape(day_str)}</b>")
 
     if not rows:
+        lines.append(f"📌 <b>Юридический дайджест за {html.escape(day_str)}</b>")
         lines.append("")
         lines.append("<i>Новых материалов нет.</i>")
         return ("\n".join(lines), [])
+
+    total = len(rows)
+    lines.append(f"📌 <b>Юридический дайджест за {html.escape(day_str)} из {total} материал{'а' if 2 <= total % 10 <= 4 and total % 100 not in range(11, 15) else 'ов' if total % 10 != 1 else ''}</b>")
 
     # Группируем по первому тегу статьи (приоритет по TAG_ORDER)
     grouped: dict[str, list[Article]] = defaultdict(list)
@@ -108,9 +133,6 @@ def build_telegram_digest_blocks(
                 break
         if not placed:
             grouped["_other"].append(a)
-
-    total = len(rows)
-    lines.append(f"<b>{total} материал{'а' if 2 <= total % 10 <= 4 and total % 100 not in range(11,15) else 'ов' if total % 10 != 1 else ''}</b>")
 
     for tag in TAG_ORDER:
         items = grouped.get(tag, [])
@@ -130,29 +152,27 @@ def build_telegram_digest_blocks(
         lines.append("")
         lines.append(f"<b>{html.escape(TAG_TITLES[tag])}</b>")
 
-        for idx, a in enumerate(items_sorted):
+        for a in items_sorted:
             url = (a.canonical_url or a.url or "").strip()
             ttl = (a.title or "").strip()
             if len(ttl) > 100:
                 ttl = ttl[:99].rstrip() + "…"
             badge = EVENT_BADGE.get(a.event_type or "", "")
 
-            # Заголовок со ссылкой
             ttl_html = html.escape(ttl)
             if url:
                 title_part = f'<a href="{html.escape(url)}">{ttl_html}</a>'
             else:
                 title_part = ttl_html
 
+            # Пустая строка перед каждой новостью внутри раздела
+            lines.append("")
             line = f"{badge} {title_part}" if badge else f"{title_part}"
             lines.append(line)
 
-            # llm_summary — краткое описание содержания от GigaChat
-            llm_s = (getattr(a, "llm_summary", None) or "").strip()
-            if llm_s:
-                if len(llm_s) > TG_REASON_MAX_CHARS:
-                    llm_s = llm_s[:TG_REASON_MAX_CHARS - 1].rstrip() + "…"
-                lines.append(f"<blockquote>{html.escape(llm_s)}</blockquote>")
+            summary_text = _best_summary(a, TG_REASON_MAX_CHARS)
+            if summary_text:
+                lines.append(f"<blockquote>{html.escape(summary_text)}</blockquote>")
 
     article_ids = [a.id for a in rows if a.id is not None]
     return ("\n".join(lines), article_ids)

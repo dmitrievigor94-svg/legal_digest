@@ -40,6 +40,18 @@ def _hash_text(s: str) -> str:
     return hashlib.sha256(s_norm.encode("utf-8")).hexdigest()
 
 
+def _strip_html(s: str, max_chars: int = 700) -> str:
+    """Убирает HTML-теги из RSS description/summary и обрезает до max_chars."""
+    if not s:
+        return ""
+    try:
+        from lxml.html import fromstring as _html_fromstring
+        text = _html_fromstring(s).text_content().strip()
+    except Exception:
+        text = re.sub(r"<[^>]+>", " ", s).strip()
+    return text[:max_chars] if max_chars else text
+
+
 def _parse_published(entry) -> Optional[datetime]:
     t = getattr(entry, "published_parsed", None) or getattr(entry, "updated_parsed", None)
     if not t:
@@ -102,6 +114,7 @@ def _fallback_parse_rss_items(content: bytes) -> list[dict]:
         title = "".join(item.xpath("./*[local-name()='title']//text()")).strip()
         link = "".join(item.xpath("./*[local-name()='link']//text()")).strip()
         pub = "".join(item.xpath("./*[local-name()='pubDate']//text()")).strip()
+        description = "".join(item.xpath("./*[local-name()='description']//text()")).strip()
 
         if not title or not link:
             continue
@@ -116,6 +129,7 @@ def _fallback_parse_rss_items(content: bytes) -> list[dict]:
                 "canonical_url": url,
                 "published_at": published_at,
                 "content_hash": _hash_text(f"{title} {url}"),
+                "summary": _strip_html(description),
             }
         )
 
@@ -135,6 +149,7 @@ def _fallback_parse_rss_items(content: bytes) -> list[dict]:
 
         updated = "".join(entry.xpath("./*[local-name()='updated']//text()")).strip()
         published = "".join(entry.xpath("./*[local-name()='published']//text()")).strip()
+        atom_summary = "".join(entry.xpath(".//*[local-name()='summary']//text()")).strip()
 
         if not title or not link:
             continue
@@ -149,6 +164,7 @@ def _fallback_parse_rss_items(content: bytes) -> list[dict]:
                 "canonical_url": url,
                 "published_at": published_at,
                 "content_hash": _hash_text(f"{title} {url}"),
+                "summary": _strip_html(atom_summary),
             }
         )
 
@@ -183,6 +199,7 @@ def fetch_rss(feed_url: str, source_id: str, source_name: str, ssl_verify: bool 
 
                 published_at = _parse_published(e)
                 content_hash = _hash_text(f"{title} {url}")
+                summary = _strip_html(getattr(e, "summary", "") or "")
 
                 out.append(
                     dict(
@@ -193,6 +210,7 @@ def fetch_rss(feed_url: str, source_id: str, source_name: str, ssl_verify: bool 
                         canonical_url=url,
                         published_at=published_at,
                         content_hash=content_hash,
+                        summary=summary,
                     )
                 )
             print(f"[RSS WARN] {source_name}: content-type={content_type} выглядит как HTML, но entries распарсились (url={final_url})")
@@ -211,6 +229,7 @@ def fetch_rss(feed_url: str, source_id: str, source_name: str, ssl_verify: bool 
                         canonical_url=it["canonical_url"],
                         published_at=it["published_at"],
                         content_hash=it["content_hash"],
+                        summary=it.get("summary", ""),
                     )
                 )
             print(f"[RSS WARN] {source_name}: content-type={content_type} выглядит как HTML, но fallback XML дал items (url={final_url})")
@@ -241,6 +260,7 @@ def fetch_rss(feed_url: str, source_id: str, source_name: str, ssl_verify: bool 
                 continue
             published_at = _parse_published(e)
             content_hash = _hash_text(f"{title} {url}")
+            summary = _strip_html(getattr(e, "summary", "") or "")
             out.append(
                 dict(
                     source_id=source_id,
@@ -250,6 +270,7 @@ def fetch_rss(feed_url: str, source_id: str, source_name: str, ssl_verify: bool 
                     canonical_url=url,
                     published_at=published_at,
                     content_hash=content_hash,
+                    summary=summary,
                 )
             )
         return out
@@ -266,6 +287,7 @@ def fetch_rss(feed_url: str, source_id: str, source_name: str, ssl_verify: bool 
                 canonical_url=it["canonical_url"],
                 published_at=it["published_at"],
                 content_hash=it["content_hash"],
+                summary=it.get("summary", ""),
             )
         )
     return out
@@ -336,7 +358,7 @@ def fetch_html_list(
                 title=title[:500],
                 url=_normalize_url(url),
                 canonical_url=_normalize_url(url),
-                published_at=None,  # дату потом доберём через fetch_published_at при необходимости
+                published_at=None,
                 content_hash=_hash_text(f"{title} {url}"),
             )
         )
