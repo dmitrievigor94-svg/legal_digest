@@ -594,6 +594,15 @@ def _format_materials_count(total: int) -> str:
         word = "материалов"
     return f"{total} {word}"
 
+def _count_topics(rows: list[Article], clusters: list[list[int]]) -> int:
+    clustered_ids: set[int] = set()
+    for group in clusters:
+        for idx in group:
+            clustered_ids.add(id(rows[idx]))
+
+    clustered_topics = len(clusters)
+    single_topics = sum(1 for a in rows if id(a) not in clustered_ids)
+    return clustered_topics + single_topics
 
 def _render_title(a: Article) -> str:
     url = (a.canonical_url or a.url or "").strip()
@@ -670,7 +679,12 @@ def build_telegram_digest_blocks(
         return ("\n".join(lines), [])
 
     total = len(rows)
-    lines.append(f"📌 <b>Юридический дайджест за {html.escape(day_str)} из {_format_materials_count(total)}</b>")
+    clusters = _cluster_articles_llm(rows)
+    total_topics = _count_topics(rows, clusters)
+
+    lines.append(
+        f"📌 <b>Юридический дайджест за {html.escape(day_str)} из {_format_materials_count(total_topics)}</b>"
+    )
 
     grouped: dict[str, list[Article]] = defaultdict(list)
     for a in rows:
@@ -745,7 +759,7 @@ def build_telegram_digest_blocks(
                 if siblings:
                     rendered = _render_related_links(siblings)
                     if rendered:
-                        lines.append(f"<i>📎 Другие материалы по теме: {rendered}</i>")
+                        lines.append(f"<i>📎 Другие публикации по теме: {rendered}</i>")
                 rendered_clusters.add(ci)
 
     article_ids = [a.id for a in rows if a.id is not None]
