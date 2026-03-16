@@ -1,8 +1,32 @@
 # app/extract.py
+import io
+import re
 import httpx
 import trafilatura
 
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X) legal_digest/1.0"
+
+
+def _extract_pdf_text(content: bytes) -> str | None:
+    try:
+        from pdfminer.high_level import extract_text
+        text = extract_text(io.BytesIO(content))
+    except Exception:
+        return None
+    if not text:
+        return None
+    # убираем мусорные символы (■, □ и прочие артефакты PDF)
+    text = re.sub(r"[■□▪▫◆◇●○]", "", text)
+    text = " ".join(text.split())
+    return text or None
+
+
+def _is_pdf(response: httpx.Response) -> bool:
+    content_type = response.headers.get("content-type", "").lower()
+    if "pdf" in content_type:
+        return True
+    final_url = str(response.url).split("?")[0].split("#")[0]
+    return final_url.endswith(".pdf")
 
 
 def fetch_and_extract_text(url: str) -> str | None:
@@ -14,12 +38,14 @@ def fetch_and_extract_text(url: str) -> str | None:
         ) as client:
             r = client.get(url)
             r.raise_for_status()
-            html = r.text
     except Exception:
         return None
 
+    if _is_pdf(r):
+        return _extract_pdf_text(r.content)
+
     text = trafilatura.extract(
-        html,
+        r.text,
         include_comments=False,
         include_tables=False,
         include_links=False,
