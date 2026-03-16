@@ -16,6 +16,7 @@ jusText==3.0.2
 lxml==6.0.2
 lxml_html_clean==0.4.4
 pdfminer.six==20260107
+striprtf==0.0.29
 psycopg2-binary==2.9.11
 pydantic==2.12.5
 pydantic_core==2.41.5

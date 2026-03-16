@@ -21,12 +21,30 @@ def _extract_pdf_text(content: bytes) -> str | None:
     return text or None
 
 
+def _extract_rtf_text(content: bytes) -> str | None:
+    try:
+        from striprtf.striprtf import rtf_to_text
+        text = rtf_to_text(content.decode("cp1251", errors="replace"))
+    except Exception:
+        return None
+    text = " ".join(text.split())
+    return text or None
+
+
 def _is_pdf(response: httpx.Response) -> bool:
     content_type = response.headers.get("content-type", "").lower()
     if "pdf" in content_type:
         return True
     final_url = str(response.url).split("?")[0].split("#")[0]
     return final_url.endswith(".pdf")
+
+
+def _is_rtf(response: httpx.Response) -> bool:
+    content_type = response.headers.get("content-type", "").lower()
+    if "rtf" in content_type:
+        return True
+    final_url = str(response.url).split("?")[0].split("#")[0]
+    return final_url.endswith(".rtf")
 
 
 def fetch_and_extract_text(url: str) -> str | None:
@@ -43,6 +61,9 @@ def fetch_and_extract_text(url: str) -> str | None:
 
     if _is_pdf(r):
         return _extract_pdf_text(r.content)
+
+    if _is_rtf(r):
+        return _extract_rtf_text(r.content)
 
     text = trafilatura.extract(
         r.text,
