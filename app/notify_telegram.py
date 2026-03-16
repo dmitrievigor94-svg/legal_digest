@@ -50,3 +50,5 @@ def send_telegram_message_html(text: str, disable_preview: bool = True) -> None:
                     continue
                 resp.raise_for_status()
                 break
+            else:
+                raise RuntimeError("[TG] не удалось отправить сообщение после 4 попыток (rate limit)")

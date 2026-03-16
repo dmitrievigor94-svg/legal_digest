@@ -598,10 +598,10 @@ def _count_topics(rows: list[Article], clusters: list[list[int]]) -> int:
     clustered_ids: set[int] = set()
     for group in clusters:
         for idx in group:
-            clustered_ids.add(id(rows[idx]))
+            clustered_ids.add(rows[idx].id)
 
     clustered_topics = len(clusters)
-    single_topics = sum(1 for a in rows if id(a) not in clustered_ids)
+    single_topics = sum(1 for a in rows if a.id not in clustered_ids)
     return clustered_topics + single_topics
 
 def _render_title(a: Article) -> str:
@@ -698,13 +698,11 @@ def build_telegram_digest_blocks(
         if not placed:
             grouped["_other"].append(a)
 
-    clusters = _cluster_articles_llm(rows)
-
     cluster_of: dict[int, int] = {}
     cluster_pos: dict[int, int] = {}
     for ci, group in enumerate(clusters):
         for pos, idx in enumerate(group):
-            aid = id(rows[idx])
+            aid = rows[idx].id
             cluster_of[aid] = ci
             cluster_pos[aid] = pos
 
@@ -728,19 +726,19 @@ def build_telegram_digest_blocks(
 
         secondary_ids: set[int] = set()
         for a in items_sorted:
-            if cluster_pos.get(id(a), 0) > 0:
-                secondary_ids.add(id(a))
+            if cluster_pos.get(a.id, 0) > 0:
+                secondary_ids.add(a.id)
 
         cluster_secondaries: dict[int, list[Article]] = defaultdict(list)
         for a in items_sorted:
-            if id(a) in secondary_ids:
-                ci = cluster_of[id(a)]
+            if a.id in secondary_ids:
+                ci = cluster_of[a.id]
                 cluster_secondaries[ci].append(a)
 
         rendered_clusters: set[int] = set()
 
         for a in items_sorted:
-            if id(a) in secondary_ids:
+            if a.id in secondary_ids:
                 continue
 
             badge = EVENT_BADGE.get(a.event_type or "", "")
@@ -753,7 +751,7 @@ def build_telegram_digest_blocks(
             if summary_text:
                 lines.append(f"<blockquote>{html.escape(summary_text)}</blockquote>")
 
-            ci = cluster_of.get(id(a))
+            ci = cluster_of.get(a.id)
             if ci is not None and ci not in rendered_clusters:
                 siblings = cluster_secondaries.get(ci, [])
                 if siblings:
