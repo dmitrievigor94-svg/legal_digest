@@ -569,6 +569,13 @@ def classify(
             print(f"[LLM HTTP ERROR] {e.response.status_code} | {source_id} | {title[:60]}")
             print(f"[LLM HTTP BODY] {e.response.text[:300]}")
             return _FALLBACK
+        except httpx.TimeoutException as e:
+            wait = 15 * attempt
+            print(f"[LLM ERROR] {source_id} | {title[:60]} | {e} | ждём {wait}с (попытка {attempt}/3)")
+            if attempt < 3:
+                time.sleep(wait)
+                continue
+            return _FALLBACK
         except Exception as e:
             print(f"[LLM ERROR] {source_id} | {title[:60]} | {e}")
             return _FALLBACK

@@ -1,7 +1,12 @@
 # app/db.py
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
+
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
 
 
 def build_db_url() -> str:

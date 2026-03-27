@@ -189,8 +189,8 @@ def main() -> None:
                 if i % 10 == 0 or i == len(to_process):
                     print(f"  {i}/{len(to_process)} обработано...")
 
-            # Периодический commit — не терять прогресс при падении
-            if i % 50 == 0:
+            # Периодический commit — не терять прогресс и держать DB-соединение живым
+            if i % 10 == 0:
                 db.commit()
 
         db.commit()
