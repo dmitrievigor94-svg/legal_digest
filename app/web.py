@@ -324,11 +324,7 @@ def index():
                 pub = pub.astimezone(LOCAL_TZ)
             pub_str = pub.strftime("%d.%m.%Y") if pub else "—"
 
-            # reason живёт в topic поле? нет — достаём из fetched_at отсутствия
-            # reason не хранится в БД — показываем event_type как fallback
-            reason = ""
-            if not a.keep and a.topic:
-                reason = a.topic
+            reason = a.llm_reason or ""
             # llm_summary есть в модели
             articles.append({
                 "id": a.id,

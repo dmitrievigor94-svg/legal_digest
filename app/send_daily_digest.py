@@ -169,6 +169,8 @@ def main() -> None:
             a.topic = c.event_type
             if c.summary:
                 a.llm_summary = c.summary
+            if c.reason:
+                a.llm_reason = c.reason
 
             if a.fetched_at is None or refetch_text or reclassify_all:
                 a.fetched_at = datetime.now(timezone.utc)

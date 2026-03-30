@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 
+from sqlalchemy import text
 from app.db import engine, Base
 from app import models  # noqa: F401  (нужно для регистрации моделей)
 
@@ -22,6 +23,20 @@ def main() -> None:
 
     Base.metadata.create_all(bind=engine)
     print("DB: tables created/checked")
+
+    # Добавляем новые колонки если их нет (идемпотентно)
+    with engine.connect() as conn:
+        for col, coldef in [
+            ("llm_reason", "TEXT"),
+        ]:
+            exists = conn.execute(text(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name='articles' AND column_name=:col"
+            ), {"col": col}).fetchone()
+            if not exists:
+                conn.execute(text(f"ALTER TABLE articles ADD COLUMN {col} {coldef}"))
+                conn.commit()
+                print(f"DB: добавлена колонка {col}")
 
 
 if __name__ == "__main__":
