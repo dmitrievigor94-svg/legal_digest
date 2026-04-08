@@ -127,10 +127,10 @@ def main() -> None:
         conn.execute(text(
             """
             UPDATE articles
-            SET tags = json_build_array(tags->>0)
+            SET tags = jsonb_build_array(tags->>0)
             WHERE tags IS NOT NULL
-              AND json_typeof(tags) = 'array'
-              AND json_array_length(tags) > 1
+              AND jsonb_typeof(tags) = 'array'
+              AND jsonb_array_length(tags) > 1
             """
         ))
         conn.commit()
