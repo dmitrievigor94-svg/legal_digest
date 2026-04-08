@@ -559,13 +559,24 @@ def _article_tags(a: Article) -> list[str]:
     if not raw:
         return []
     if isinstance(raw, list):
-        return [str(t) for t in raw]
+        for tag in raw:
+            if isinstance(tag, str) and tag in TAG_ORDER:
+                return [tag]
+        return []
     if isinstance(raw, str):
         import json
         try:
-            return json.loads(raw)
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                for tag in parsed:
+                    if isinstance(tag, str) and tag in TAG_ORDER:
+                        return [tag]
+            if isinstance(parsed, str) and parsed in TAG_ORDER:
+                return [parsed]
         except Exception:
             return []
+    if isinstance(raw, str) and raw in TAG_ORDER:
+        return [raw]
     return []
 
 
@@ -860,6 +871,7 @@ def get_articles_for_digest(
     q = (
         select(Article)
         .where(Article.fetched_at.is_not(None))
+        .where(Article.sent_at.is_(None))
         .order_by(Article.published_at.desc().nullslast(), Article.created_at.desc())
         .limit(limit)
     )

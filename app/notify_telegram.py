@@ -1,10 +1,13 @@
-# app/notify_telegram.py
-import os
+import logging
 import time as _time
+
 import httpx
+
+from app.config import settings
 
 TG_API = "https://api.telegram.org/bot{token}/{method}"
 MAX_LEN = 4000
+logger = logging.getLogger(__name__)
 
 
 def _split_html_text(text: str, max_len: int = MAX_LEN):
@@ -24,8 +27,8 @@ def _split_html_text(text: str, max_len: int = MAX_LEN):
 
 
 def send_telegram_message_html(text: str, disable_preview: bool = True) -> None:
-    token = os.environ["TELEGRAM_BOT_TOKEN"]
-    chat_id = int(os.environ["TELEGRAM_CHAT_ID"])
+    token = settings.telegram_bot_token
+    chat_id = settings.telegram_chat_id
 
     url = TG_API.format(token=token, method="sendMessage")
     chunks = _split_html_text(text)
@@ -45,7 +48,11 @@ def send_telegram_message_html(text: str, disable_preview: bool = True) -> None:
                 )
                 if resp.status_code == 429:
                     retry_after = int(resp.json().get("parameters", {}).get("retry_after", 5))
-                    print(f"[TG] rate limit, ждём {retry_after}с (попытка {attempt+1}/4)")
+                    logger.warning(
+                        "[TG] rate limit, ждём %sс (попытка %s/4)",
+                        retry_after,
+                        attempt + 1,
+                    )
                     _time.sleep(retry_after + 1)
                     continue
                 resp.raise_for_status()

@@ -581,9 +581,45 @@ class Classified:
     tags: list[str] = field(default_factory=list)
     reason: str = ""
     summary: str = ""
+    decision_source: str = "llm"
 
 
-_FALLBACK = Classified(keep=False, score=0, event_type="MARKET_CASES", reason="llm_error", summary="")
+_FALLBACK = Classified(
+    keep=False,
+    score=0,
+    event_type="MARKET_CASES",
+    reason="llm_error",
+    summary="",
+    decision_source="llm_error",
+)
+
+_VALID_TAGS = {
+    "pdn",
+    "advertising",
+    "competition",
+    "banking",
+    "telecom",
+    "it_platforms",
+    "cybersecurity",
+    "ip",
+    "consumers",
+    "_other",
+}
+
+
+def _normalize_tags(raw_tags: object) -> list[str]:
+    if not isinstance(raw_tags, list):
+        return []
+    for tag in raw_tags:
+        if isinstance(tag, str) and tag in _VALID_TAGS:
+            return [tag]
+    return []
+
+
+def _ensure_keep_tag(keep: bool, tags: list[str]) -> list[str]:
+    if keep and not tags:
+        return ["_other"]
+    return tags
 
 
 def classify(
@@ -605,10 +641,24 @@ def classify(
     s = f"{title or ''} {text or ''}".strip()
 
     if _should_skip_source(source_id):
-        return Classified(False, -10, "MARKET_CASES", reason="skipped_source", summary="")
+        return Classified(
+            False,
+            -10,
+            "MARKET_CASES",
+            reason="skipped_source",
+            summary="",
+            decision_source="rules_skip_source",
+        )
 
     if _fast_deny(s):
-        return Classified(False, -10, "MARKET_CASES", reason="fast_deny", summary="")
+        return Classified(
+            False,
+            -10,
+            "MARKET_CASES",
+            reason="fast_deny",
+            summary="",
+            decision_source="rules_fast_deny",
+        )
 
     user_msg = _build_user_message(source_id, title, text)
 
@@ -652,9 +702,17 @@ def classify(
     event_type = str(parsed.get("event_type", "MARKET_CASES"))
     if event_type not in _VALID_TYPES:
         event_type = "MARKET_CASES"
-    tags       = [str(t) for t in parsed.get("tags", []) if isinstance(t, str)]
+    tags       = _ensure_keep_tag(keep, _normalize_tags(parsed.get("tags", [])))
     reason     = str(parsed.get("reason", ""))
     summary    = str(parsed.get("summary", "")) if keep else ""
     score      = 10 if keep else -10
 
-    return Classified(keep=keep, score=score, event_type=event_type, tags=tags, reason=reason, summary=summary)
+    return Classified(
+        keep=keep,
+        score=score,
+        event_type=event_type,
+        tags=tags,
+        reason=reason,
+        summary=summary,
+        decision_source="llm",
+    )

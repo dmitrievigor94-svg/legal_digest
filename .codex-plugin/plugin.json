@@ -1,0 +1,18 @@
+{
+  "name": "legal-digest-ecc-curated",
+  "version": "0.1.0",
+  "description": "Project-local Codex layer inspired by Everything Claude Code, curated for legal_digest.",
+  "author": {
+    "name": "Local project setup"
+  },
+  "repository": "https://github.com/affaan-m/everything-claude-code",
+  "license": "MIT",
+  "keywords": ["codex", "skills", "agents", "legal-digest", "ecc"],
+  "interface": {
+    "displayName": "Legal Digest Codex Layer",
+    "shortDescription": "Curated ECC-style Codex setup for legal_digest.",
+    "longDescription": "A lightweight project-local Codex layer that borrows useful workflow ideas from Everything Claude Code without replacing the project's Claude Code configuration.",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"]
+  }
+}

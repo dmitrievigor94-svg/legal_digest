@@ -1,0 +1,29 @@
+#:schema https://developers.openai.com/codex/config-schema.json
+
+# Project-local Codex baseline inspired by Everything Claude Code (ECC),
+# adapted to be safe for this repository and to coexist with Claude Code.
+
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+web_search = "live"
+
+persistent_instructions = "Follow AGENTS.md and docs/agent-context.md. Prefer project-local .codex skills and agents when they clearly fit the task."
+
+[features]
+multi_agent = true
+
+[agents]
+max_threads = 4
+max_depth = 1
+
+[agents.explorer]
+description = "Read-only codebase explorer for tracing real execution paths before edits."
+config_file = "agents/explorer.toml"
+
+[agents.reviewer]
+description = "Correctness-first reviewer for regressions, risks, and missing tests."
+config_file = "agents/reviewer.toml"
+
+[agents.docs_researcher]
+description = "Documentation verifier for library/framework behavior and release-sensitive claims."
+config_file = "agents/docs-researcher.toml"
