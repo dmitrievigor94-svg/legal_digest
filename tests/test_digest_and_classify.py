@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.classify_llm import _ensure_keep_tag
 from app.db import Base
-from app.digest import get_articles_for_digest
+from app.digest import build_telegram_digest_blocks, get_articles_for_digest
 from app.models import Article
 
 
@@ -71,6 +71,47 @@ class DigestSelectionTests(unittest.TestCase):
         titles = {row.title for row in rows}
         self.assertIn("Fresh article", titles)
         self.assertNotIn("Sent article", titles)
+
+    def test_build_digest_renders_related_publications_for_manual_group(self) -> None:
+        with self.SessionLocal() as db:
+            primary = Article(
+                source_id="rapsi_judicial",
+                source_name="РАПСИ",
+                title="Primary article",
+                url="https://example.com/primary",
+                canonical_url="https://example.com/primary",
+                content_hash="hash-primary",
+                keep=True,
+                event_type="COURTS",
+                tags=["competition"],
+                fetched_at=datetime(2026, 4, 8, 9, 0, tzinfo=timezone.utc),
+                published_at=datetime(2026, 4, 8, 9, 0, tzinfo=timezone.utc),
+            )
+            db.add(primary)
+            db.commit()
+
+            secondary = Article(
+                source_id="pravo_ru",
+                source_name="Право.ru",
+                title="Secondary article",
+                url="https://example.com/secondary",
+                canonical_url="https://example.com/secondary",
+                content_hash="hash-secondary",
+                keep=True,
+                event_type="COURTS",
+                tags=["competition"],
+                fetched_at=datetime(2026, 4, 8, 8, 0, tzinfo=timezone.utc),
+                published_at=datetime(2026, 4, 8, 8, 0, tzinfo=timezone.utc),
+                manual_digest_parent_id=primary.id,
+            )
+            db.add(secondary)
+            db.commit()
+
+            text, sent_ids = build_telegram_digest_blocks(db, limit=20)
+
+        self.assertEqual(len(sent_ids), 2)
+        self.assertIn("Другие публикации по теме", text)
+        self.assertIn("Право.ru", text)
 
 
 if __name__ == "__main__":

@@ -16,8 +16,10 @@ from app.digest import (
     EVENT_BADGE,
     TAG_ORDER,
     TAG_TITLES,
+    _build_digest_topics,
     _article_tags,
     _best_summary,
+    _render_related_links,
     _render_title,
     get_articles_for_digest,
 )
@@ -588,6 +590,24 @@ a { color: inherit; }
   color: var(--warn);
   font-weight: 700;
 }
+.related-editor-list {
+  display: grid;
+  gap: 8px;
+}
+.related-editor-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(24, 33, 28, 0.04);
+}
+.related-editor-item span {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
 .archive-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(320px, .85fr);
@@ -1001,6 +1021,32 @@ a { color: inherit; }
                     </select>
                     <button type="submit" class="tiny-btn save-btn" style="display:none;">Сохранить</button>
                   </form>
+                  <form method="post" action="/article/{{ a.id }}/group" class="release-controls-grid">
+                    <input type="hidden" name="next" value="{{ current_location }}">
+                    <select name="group_parent" onchange="this.form.requestSubmit()" style="grid-column: 1 / -1;">
+                      <option value="auto" {% if not a.manual_group_parent_id and not a.digest_force_standalone %}selected{% endif %}>Группировка: авто</option>
+                      <option value="__self__" {% if a.digest_force_standalone %}selected{% endif %}>Группировка: отдельная тема</option>
+                      {% for option in release_group_options %}
+                      {% if option.id != a.id %}
+                      <option value="{{ option.id }}" {% if a.manual_group_parent_id == option.id %}selected{% endif %}>Внутрь темы: {{ option.title }}</option>
+                      {% endif %}
+                      {% endfor %}
+                    </select>
+                  </form>
+                  {% if a.related_items %}
+                  <div class="related-editor-list">
+                    {% for related in a.related_items %}
+                    <div class="related-editor-item">
+                      <span>{{ related.title }}</span>
+                      <form method="post" action="/article/{{ related.id }}/group">
+                        <input type="hidden" name="next" value="{{ current_location }}">
+                        <input type="hidden" name="group_parent" value="__self__">
+                        <button type="submit" class="tiny-btn reset-btn">Отдельно</button>
+                      </form>
+                    </div>
+                    {% endfor %}
+                  </div>
+                  {% endif %}
                   <div class="release-links">
                     <div class="tiny-actions compact">
                       <form method="post" action="/article/{{ a.id }}/reset">
@@ -1040,7 +1086,22 @@ a { color: inherit; }
                 <input type="hidden" name="keep" value="1">
                 <input type="hidden" name="event_type" value="{{ a.event_type }}">
                 <input type="hidden" name="tag" value="{{ a.tag_value }}">
+                <select name="group_parent" style="display:none;">
+                  <option value=""></option>
+                </select>
                 <button type="submit" class="tiny-btn save-btn">Закинуть в дайджест</button>
+              </form>
+              <form method="post" action="/article/{{ a.id }}/group">
+                <input type="hidden" name="next" value="{{ current_location }}">
+                <input type="hidden" name="promote_on_group" value="1">
+                <input type="hidden" name="event_type" value="{{ a.event_type }}">
+                <input type="hidden" name="tag" value="{{ a.tag_value }}">
+                <select name="group_parent" onchange="this.form.requestSubmit()">
+                  <option value="__self__">Добавить как отдельную тему</option>
+                  {% for option in release_group_options %}
+                  <option value="{{ option.id }}">Внутрь темы: {{ option.title }}</option>
+                  {% endfor %}
+                </select>
               </form>
             </div>
             {% endfor %}
@@ -1855,17 +1916,10 @@ def _build_release_sections(rows: list[Article]) -> list[dict]:
         items = grouped.get(tag, [])
         if not items:
             continue
-        items_sorted = sorted(
-            items,
-            key=lambda article: (
-                getattr(article, "published_at", None) is not None,
-                getattr(article, "published_at", None) or datetime.min.replace(tzinfo=timezone.utc),
-            ),
-            reverse=True,
-        )[:15]
-
         section_items = []
-        for article in items_sorted:
+        for topic in _build_digest_topics(items)[:15]:
+            article = topic["primary"]
+            related = topic["related"]
             pub = getattr(article, "published_at", None) or getattr(article, "created_at", None)
             if pub and pub.tzinfo:
                 pub = pub.astimezone(LOCAL_TZ)
@@ -1882,8 +1936,24 @@ def _build_release_sections(rows: list[Article]) -> list[dict]:
                     "keep": getattr(article, "keep", None),
                     "processing_status": getattr(article, "processing_status", None),
                     "decision_source": getattr(article, "decision_source", None),
-                    "preview_html": _release_item_preview_html(article),
+                    "preview_html": _release_item_preview_html(article)
+                    + (
+                        f'\n<p><i>📎 Другие публикации по теме: {_render_related_links(related)}</i></p>'
+                        if related and _render_related_links(related)
+                        else ""
+                    ),
+                    "manual_group_parent_id": getattr(article, "manual_digest_parent_id", None),
+                    "digest_force_standalone": bool(getattr(article, "digest_force_standalone", False)),
                     "needs_attention": not getattr(article, "event_type", None) or not tag_value,
+                    "related_items": [
+                        {
+                            "id": related_article.id,
+                            "title": related_article.title,
+                            "source_name": related_article.source_name,
+                            "manual_digest_parent_id": getattr(related_article, "manual_digest_parent_id", None),
+                        }
+                        for related_article in related
+                    ],
                 }
             )
 
@@ -1987,6 +2057,80 @@ def update_article(article_id: int):
             db,
             article=article,
             action="update",
+            previous_keep=previous_keep,
+            previous_event_type=previous_event_type,
+            previous_tag=previous_tag,
+        )
+        db.commit()
+
+    return redirect(_redirect_back(next_value))
+
+
+def _apply_group_override(db, article: Article, raw_parent: str) -> None:
+    raw_parent = (raw_parent or "").strip()
+    article_id = getattr(article, "id", None)
+    if article_id is None:
+        return
+
+    if raw_parent in {"", "auto"}:
+        article.manual_digest_parent_id = None
+        article.digest_force_standalone = False
+        return
+
+    if raw_parent == "__self__":
+        article.manual_digest_parent_id = None
+        article.digest_force_standalone = True
+        return
+
+    if not raw_parent.isdigit():
+        return
+
+    parent_id = int(raw_parent)
+    if parent_id == article_id:
+        article.manual_digest_parent_id = None
+        article.digest_force_standalone = True
+        return
+
+    parent = db.get(Article, parent_id)
+    if parent is None:
+        return
+
+    resolved_parent_id = getattr(parent, "manual_digest_parent_id", None) or parent.id
+    if resolved_parent_id == article_id:
+        article.manual_digest_parent_id = None
+        article.digest_force_standalone = True
+        return
+
+    article.manual_digest_parent_id = resolved_parent_id
+    article.digest_force_standalone = False
+
+
+@app.post("/article/<int:article_id>/group")
+def update_article_group(article_id: int):
+    next_value = request.form.get("next", "")
+    with SessionLocal() as db:
+        article = db.get(Article, article_id)
+        if article is None:
+            return redirect(_redirect_back(next_value))
+
+        previous_keep = article.keep
+        previous_event_type = article.event_type
+        previous_tag = _primary_tag(article.tags)
+        if request.form.get("promote_on_group", "") == "1":
+            article.keep = True
+            event_type = (request.form.get("event_type", "") or "").strip()
+            tag = (request.form.get("tag", "") or "").strip()
+            article.event_type = event_type or article.event_type
+            if tag:
+                article.tags = _parse_tag(tag)
+        _apply_group_override(db, article, request.form.get("group_parent", ""))
+        article.decision_source = "manual"
+        article.processing_status = "manual_review"
+        article.last_processed_at = datetime.now(timezone.utc)
+        _record_review(
+            db,
+            article=article,
+            action="group_update",
             previous_keep=previous_keep,
             previous_event_type=previous_event_type,
             previous_tag=previous_tag,
@@ -2255,6 +2399,7 @@ def _render_panel(panel: str):
         sent_digest_total = len(sent_digest_groups)
         digest_preview = None
         release_sections = []
+        release_group_options = []
         rejected_release_candidates = []
 
         digest_runs = []
@@ -2342,6 +2487,14 @@ def _render_panel(panel: str):
         if panel == "release":
             release_digest_date = digest_window[1].astimezone(LOCAL_TZ).strftime("%d.%m.%Y")
             release_sections = _build_release_sections(next_digest_rows)
+            release_group_options = [
+                {
+                    "id": entry["id"],
+                    "title": entry["title"],
+                }
+                for section in release_sections
+                for entry in section["entries"]
+            ]
             rejected_rows = db.execute(
                 select(Article)
                 .where(Article.fetched_at.isnot(None))
@@ -2366,6 +2519,7 @@ def _render_panel(panel: str):
                         "summary": article.llm_summary or article.summary or "",
                         "event_type": article.event_type or "",
                         "tag_value": _primary_tag(article.tags) or "",
+                        "group_parent_value": "",
                     }
                 )
             digest_preview = {
@@ -2520,6 +2674,7 @@ def _render_panel(panel: str):
         next_digest_preview=_preview_items(next_digest_rows),
         digest_preview=digest_preview,
         release_sections=release_sections,
+        release_group_options=release_group_options if panel == "release" else [],
         rejected_release_candidates=rejected_release_candidates if panel == "release" else [],
         digest_window_label=digest_window_label,
         latest_run=latest_run,

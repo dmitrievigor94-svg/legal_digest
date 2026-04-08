@@ -412,6 +412,68 @@ class WebActionsTests(unittest.TestCase):
         self.assertEqual(article.tags, ["competition"])
         self.assertEqual(article.processing_status, "manual_review")
 
+    def test_group_route_can_force_article_to_standalone(self) -> None:
+        with self.SessionLocal() as db:
+            article = db.get(Article, self.article_id)
+            assert article is not None
+            article.keep = True
+            article.event_type = "ENFORCEMENT"
+            article.tags = ["competition"]
+            article.manual_digest_parent_id = 999
+            db.commit()
+
+        response = self.client.post(
+            f"/article/{self.article_id}/group",
+            data={"group_parent": "__self__", "next": ""},
+        )
+        self.assertEqual(response.status_code, 302)
+
+        article = self._get_article()
+        self.assertIsNone(article.manual_digest_parent_id)
+        self.assertTrue(article.digest_force_standalone)
+
+    def test_group_route_can_promote_rejected_article_into_topic(self) -> None:
+        with self.SessionLocal() as db:
+            parent = Article(
+                source_id="cbr_press",
+                source_name="ЦБ",
+                title="Parent topic",
+                url="https://example.com/parent",
+                canonical_url="https://example.com/parent",
+                content_hash="hash-parent",
+                keep=True,
+                event_type="ENFORCEMENT",
+                tags=["competition"],
+                processing_status="classified",
+            )
+            db.add(parent)
+            db.commit()
+            parent_id = parent.id
+
+            article = db.get(Article, self.article_id)
+            assert article is not None
+            article.keep = False
+            article.event_type = "ENFORCEMENT"
+            article.tags = ["competition"]
+            db.commit()
+
+        response = self.client.post(
+            f"/article/{self.article_id}/group",
+            data={
+                "group_parent": str(parent_id),
+                "promote_on_group": "1",
+                "event_type": "ENFORCEMENT",
+                "tag": "competition",
+                "next": "",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+
+        article = self._get_article()
+        self.assertTrue(article.keep)
+        self.assertEqual(article.manual_digest_parent_id, parent_id)
+        self.assertFalse(article.digest_force_standalone)
+
     def test_bulk_update_marks_articles_as_manual_keep(self) -> None:
         with self.SessionLocal() as db:
             second = Article(

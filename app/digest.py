@@ -615,6 +615,125 @@ def _count_topics(rows: list[Article], clusters: list[list[int]]) -> int:
     single_topics = sum(1 for a in rows if a.id not in clustered_ids)
     return clustered_topics + single_topics
 
+
+def _sort_digest_articles(items: list[Article]) -> list[Article]:
+    return sorted(
+        items,
+        key=lambda a: (
+            getattr(a, "published_at", None) is not None,
+            getattr(a, "published_at", None) or _FALLBACK_DT,
+        ),
+        reverse=True,
+    )
+
+
+def _resolve_manual_digest_parent(article: Article, article_by_id: dict[int, Article]) -> int | None:
+    article_id = getattr(article, "id", None)
+    parent_id = getattr(article, "manual_digest_parent_id", None)
+    if not article_id or not parent_id or parent_id == article_id or parent_id not in article_by_id:
+        return None
+
+    seen = {article_id}
+    current = parent_id
+    while current:
+        if current in seen:
+            return None
+        seen.add(current)
+        parent_article = article_by_id.get(current)
+        if parent_article is None:
+            return None
+        next_parent = getattr(parent_article, "manual_digest_parent_id", None)
+        if not next_parent or next_parent == current or next_parent not in article_by_id:
+            return current
+        current = next_parent
+    return None
+
+
+def _build_digest_topics(items: list[Article]) -> list[dict]:
+    ordered = _sort_digest_articles(items)
+    article_by_id = {
+        article.id: article
+        for article in ordered
+        if getattr(article, "id", None) is not None
+    }
+
+    manual_children: dict[int, list[Article]] = defaultdict(list)
+    manual_child_ids: set[int] = set()
+    for article in ordered:
+        root_id = _resolve_manual_digest_parent(article, article_by_id)
+        if root_id is None:
+            continue
+        manual_children[root_id].append(article)
+        if article.id is not None:
+            manual_child_ids.add(article.id)
+
+    topics: list[dict] = []
+    used_ids: set[int] = set()
+    order_index = {
+        article_id: idx
+        for idx, article in enumerate(ordered)
+        if (article_id := getattr(article, "id", None)) is not None
+    }
+
+    for article in ordered:
+        article_id = getattr(article, "id", None)
+        if article_id is None or article_id not in manual_children:
+            continue
+        siblings = manual_children[article_id]
+        topics.append(
+            {
+                "primary": article,
+                "related": siblings,
+                "manual": True,
+                "sort_index": order_index.get(article_id, 0),
+            }
+        )
+        used_ids.add(article_id)
+        used_ids.update(s.id for s in siblings if getattr(s, "id", None) is not None)
+
+    auto_candidates = [
+        article
+        for article in ordered
+        if getattr(article, "id", None) not in used_ids
+        and not getattr(article, "digest_force_standalone", False)
+    ]
+    auto_clusters = _cluster_articles_llm(auto_candidates)
+    auto_used_ids: set[int] = set()
+    for group in auto_clusters:
+        primary = auto_candidates[group[0]]
+        related = [auto_candidates[idx] for idx in group[1:]]
+        primary_id = getattr(primary, "id", None)
+        topics.append(
+            {
+                "primary": primary,
+                "related": related,
+                "manual": False,
+                "sort_index": order_index.get(primary_id, group[0]),
+            }
+        )
+        if primary_id is not None:
+            auto_used_ids.add(primary_id)
+        auto_used_ids.update(a.id for a in related if getattr(a, "id", None) is not None)
+
+    used_ids.update(auto_used_ids)
+
+    for article in ordered:
+        article_id = getattr(article, "id", None)
+        if article_id is not None and article_id in used_ids:
+            continue
+        topics.append(
+            {
+                "primary": article,
+                "related": [],
+                "manual": bool(getattr(article, "digest_force_standalone", False)),
+                "sort_index": order_index.get(article_id, len(topics)),
+            }
+        )
+        if article_id is not None:
+            used_ids.add(article_id)
+
+    return sorted(topics, key=lambda item: item["sort_index"])
+
 def _render_title(a: Article) -> str:
     url = (a.canonical_url or a.url or "").strip()
     ttl = _normalize_ws((a.title or "").strip())
@@ -689,9 +808,9 @@ def build_telegram_digest_blocks(
         lines.append("<i>Новых материалов нет.</i>")
         return ("\n".join(lines), [])
 
+    digest_topics_all = _build_digest_topics(rows)
     total = len(rows)
-    clusters = _cluster_articles_llm(rows)
-    total_topics = _count_topics(rows, clusters)
+    total_topics = len(digest_topics_all)
 
     lines.append(
         f"📌 <b>Юридический дайджест за {html.escape(day_str)} из {_format_materials_count(total_topics)}</b>"
@@ -709,48 +828,17 @@ def build_telegram_digest_blocks(
         if not placed:
             grouped["_other"].append(a)
 
-    cluster_of: dict[int, int] = {}
-    cluster_pos: dict[int, int] = {}
-    for ci, group in enumerate(clusters):
-        for pos, idx in enumerate(group):
-            aid = rows[idx].id
-            cluster_of[aid] = ci
-            cluster_pos[aid] = pos
-
     for tag in TAG_ORDER:
         items = grouped.get(tag, [])
         if not items:
             continue
-
-        items_sorted = sorted(
-            items,
-            key=lambda a: (
-                a.published_at is not None,
-                a.published_at or _FALLBACK_DT,
-            ),
-            reverse=True,
-        )
-        items_sorted = items_sorted[:TG_MAX_PER_SECTION]
+        topics = _build_digest_topics(items)[:TG_MAX_PER_SECTION]
 
         lines.append("")
         lines.append(f"<b>→ {html.escape(TAG_TITLES[tag])}</b>")
-
-        secondary_ids: set[int] = set()
-        for a in items_sorted:
-            if cluster_pos.get(a.id, 0) > 0:
-                secondary_ids.add(a.id)
-
-        cluster_secondaries: dict[int, list[Article]] = defaultdict(list)
-        for a in items_sorted:
-            if a.id in secondary_ids:
-                ci = cluster_of[a.id]
-                cluster_secondaries[ci].append(a)
-
-        rendered_clusters: set[int] = set()
-
-        for a in items_sorted:
-            if a.id in secondary_ids:
-                continue
+        for topic in topics:
+            a = topic["primary"]
+            siblings = topic["related"]
 
             badge = EVENT_BADGE.get(a.event_type or "", "")
             title_part = _render_title(a)
@@ -762,14 +850,10 @@ def build_telegram_digest_blocks(
             if summary_text:
                 lines.append(f"<blockquote>{html.escape(summary_text)}</blockquote>")
 
-            ci = cluster_of.get(a.id)
-            if ci is not None and ci not in rendered_clusters:
-                siblings = cluster_secondaries.get(ci, [])
-                if siblings:
-                    rendered = _render_related_links(siblings)
-                    if rendered:
-                        lines.append(f"<i>📎 Другие публикации по теме: {rendered}</i>")
-                rendered_clusters.add(ci)
+            if siblings:
+                rendered = _render_related_links(siblings)
+                if rendered:
+                    lines.append(f"<i>📎 Другие публикации по теме: {rendered}</i>")
 
     article_ids = [a.id for a in rows if a.id is not None]
     return ("\n".join(lines), article_ids)

@@ -33,6 +33,8 @@ def main() -> None:
             ("processing_status", "VARCHAR(32) DEFAULT 'new'"),
             ("decision_source", "VARCHAR(32)"),
             ("last_processed_at", "TIMESTAMP WITH TIME ZONE"),
+            ("manual_digest_parent_id", "BIGINT"),
+            ("digest_force_standalone", "BOOLEAN DEFAULT false"),
         ]:
             exists = conn.execute(text(
                 "SELECT 1 FROM information_schema.columns "
@@ -42,6 +44,7 @@ def main() -> None:
                 conn.execute(text(f"ALTER TABLE articles ADD COLUMN {col} {coldef}"))
                 conn.commit()
                 print(f"DB: добавлена колонка {col}")
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_articles_manual_digest_parent_id ON articles (manual_digest_parent_id)"))
 
         conn.execute(text(
             """
@@ -127,10 +130,10 @@ def main() -> None:
         conn.execute(text(
             """
             UPDATE articles
-            SET tags = jsonb_build_array(tags->>0)
+            SET tags = json_build_array((tags::jsonb)->>0)
             WHERE tags IS NOT NULL
-              AND jsonb_typeof(tags) = 'array'
-              AND jsonb_array_length(tags) > 1
+              AND jsonb_typeof(tags::jsonb) = 'array'
+              AND jsonb_array_length(tags::jsonb) > 1
             """
         ))
         conn.commit()

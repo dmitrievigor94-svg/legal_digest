@@ -45,6 +45,8 @@ class Article(Base):
     classify_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     processing_status: Mapped[str] = mapped_column(String(32), nullable=False, index=True, default="new", server_default="new")
     decision_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    manual_digest_parent_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
+    digest_force_standalone: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
 
     topic: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
