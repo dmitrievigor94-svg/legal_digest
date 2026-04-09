@@ -19,7 +19,6 @@ from app.digest import (
     _build_digest_topics,
     _article_tags,
     _best_summary,
-    _render_related_links,
     _render_title,
     get_articles_for_digest,
 )
@@ -250,6 +249,12 @@ a { color: inherit; }
   padding: 18px;
   margin-bottom: 18px;
 }
+.workspace.archive-workspace {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
 .workspace-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -262,10 +267,11 @@ a { color: inherit; }
   grid-template-columns: 1fr;
 }
 .panel {
-  background: rgba(255, 255, 255, 0.76);
-  border: 1px solid var(--line);
-  border-radius: 22px;
-  padding: 18px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
 }
 .panel h3 {
   margin: 0 0 6px;
@@ -529,6 +535,7 @@ a { color: inherit; }
   grid-template-columns: minmax(0, 1.4fr) minmax(320px, .95fr);
   gap: 14px;
   align-items: start;
+  min-width: 0;
 }
 .release-row.needs-attention .release-controls {
   border-color: rgba(156, 108, 31, 0.28);
@@ -563,14 +570,17 @@ a { color: inherit; }
   border-radius: 0;
   border: none;
   background: transparent;
+  min-width: 0;
 }
 .release-controls-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
+  min-width: 0;
 }
 .release-controls-grid select {
   width: 100%;
+  min-width: 0;
   height: 40px;
   border-radius: 12px;
   border: 1px solid var(--line);
@@ -593,20 +603,56 @@ a { color: inherit; }
 .related-editor-list {
   display: grid;
   gap: 8px;
+  margin-top: 10px;
 }
 .related-editor-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: inline-flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-  padding: 10px 12px;
-  border-radius: 14px;
-  background: rgba(24, 33, 28, 0.04);
+  margin-right: 10px;
+  margin-bottom: 8px;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
 }
-.related-editor-item span {
+.related-editor-item form {
+  display: inline-flex;
+  max-width: 100%;
+}
+.related-editor-prefix {
+  font-size: 13px;
+  color: #4f5e55;
+  font-style: italic;
+}
+.related-editor-name {
   min-width: 0;
+  font-size: 13px;
+  color: #4f5e55;
+}
+.release-grouping-inline {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+.release-grouping-inline label {
   font-size: 12px;
   color: var(--muted);
+  font-weight: 600;
+}
+.release-grouping-inline select {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 240px;
+  height: 36px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.92);
+  padding: 0 10px;
+  font-size: 12px;
 }
 .archive-layout {
   display: grid;
@@ -619,10 +665,12 @@ a { color: inherit; }
   gap: 16px;
 }
 .archive-block {
-  background: rgba(255, 255, 255, 0.76);
-  border: 1px solid var(--line);
-  border-radius: 22px;
+  background: var(--surface);
+  backdrop-filter: blur(18px);
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 28px;
   padding: 18px;
+  box-shadow: var(--shadow);
 }
 .archive-block h3 {
   margin: 0 0 10px;
@@ -659,19 +707,6 @@ a { color: inherit; }
 .archive-stat strong {
   display: block;
   margin-bottom: 4px;
-}
-.archive-review-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 10px;
-}
-.archive-review-list li {
-  padding: 12px 14px;
-  border-radius: 16px;
-  background: rgba(252, 250, 246, 0.92);
-  border: 1px solid rgba(24, 33, 28, 0.08);
 }
 .rejected-backlog {
   display: grid;
@@ -951,6 +986,14 @@ a { color: inherit; }
   .select-col { order: -1; }
   .tiny-actions { flex-direction: column; }
   .page-info { margin-left: 0; width: 100%; }
+  .release-controls { padding-left: 0; }
+  .release-grouping-inline { flex-direction: column; align-items: stretch; }
+  .release-grouping-inline select { width: 100%; flex-basis: auto; }
+  .related-editor-item { display: flex; flex-direction: column; align-items: stretch; margin-right: 0; }
+  .related-editor-item form,
+  .related-editor-item .tiny-btn,
+  .release-links form,
+  .release-links .tiny-btn { width: 100%; }
 }
 </style>
 </head>
@@ -967,7 +1010,7 @@ a { color: inherit; }
     <a href="{{ panel_urls.archive }}" class="pill {% if panel == 'archive' %}active{% endif %}">Архив и исправления</a>
   </nav>
 
-  <section class="workspace">
+  <section class="workspace {% if panel == 'archive' %}archive-workspace{% endif %}">
     {% if panel == 'release' %}
     <div class="panel">
       <div class="release-workbench">
@@ -995,6 +1038,21 @@ a { color: inherit; }
               <div class="release-row {% if a.needs_attention %}needs-attention{% endif %}" id="preview-{{ a.id }}">
                 <div class="release-preview">
                   <div class="release-preview-fragment">{{ a.preview_html|safe }}</div>
+                  {% if a.related_items %}
+                  <div class="related-editor-list">
+                    <div class="related-editor-prefix">Другие публикации по теме:</div>
+                    {% for related in a.related_items %}
+                    <div class="related-editor-item">
+                      <span class="related-editor-name">{{ related.title }}</span>
+                      <form method="post" action="/article/{{ related.id }}/group">
+                        <input type="hidden" name="next" value="{{ current_location }}">
+                        <input type="hidden" name="group_parent" value="__self__">
+                        <button type="submit" class="tiny-btn reset-btn">Вытащить из темы</button>
+                      </form>
+                    </div>
+                    {% endfor %}
+                  </div>
+                  {% endif %}
                 </div>
                 <div class="release-controls">
                   {% if a.needs_attention %}
@@ -1021,32 +1079,18 @@ a { color: inherit; }
                     </select>
                     <button type="submit" class="tiny-btn save-btn" style="display:none;">Сохранить</button>
                   </form>
-                  <form method="post" action="/article/{{ a.id }}/group" class="release-controls-grid">
+                  <form method="post" action="/article/{{ a.id }}/group" class="release-grouping-inline">
                     <input type="hidden" name="next" value="{{ current_location }}">
-                    <select name="group_parent" onchange="this.form.requestSubmit()" style="grid-column: 1 / -1;">
-                      <option value="auto" {% if not a.manual_group_parent_id and not a.digest_force_standalone %}selected{% endif %}>Группировка: авто</option>
-                      <option value="__self__" {% if a.digest_force_standalone %}selected{% endif %}>Группировка: отдельная тема</option>
+                    <label for="group-parent-{{ a.id }}">Опустить внутрь темы</label>
+                    <select id="group-parent-{{ a.id }}" name="group_parent" onchange="this.form.requestSubmit()">
+                      <option value="auto">Не менять</option>
                       {% for option in release_group_options %}
                       {% if option.id != a.id %}
-                      <option value="{{ option.id }}" {% if a.manual_group_parent_id == option.id %}selected{% endif %}>Внутрь темы: {{ option.title }}</option>
+                      <option value="{{ option.id }}">{{ option.title }}</option>
                       {% endif %}
                       {% endfor %}
                     </select>
                   </form>
-                  {% if a.related_items %}
-                  <div class="related-editor-list">
-                    {% for related in a.related_items %}
-                    <div class="related-editor-item">
-                      <span>{{ related.title }}</span>
-                      <form method="post" action="/article/{{ related.id }}/group">
-                        <input type="hidden" name="next" value="{{ current_location }}">
-                        <input type="hidden" name="group_parent" value="__self__">
-                        <button type="submit" class="tiny-btn reset-btn">Отдельно</button>
-                      </form>
-                    </div>
-                    {% endfor %}
-                  </div>
-                  {% endif %}
                   <div class="release-links">
                     <div class="tiny-actions compact">
                       <form method="post" action="/article/{{ a.id }}/reset">
@@ -1097,9 +1141,9 @@ a { color: inherit; }
                 <input type="hidden" name="event_type" value="{{ a.event_type }}">
                 <input type="hidden" name="tag" value="{{ a.tag_value }}">
                 <select name="group_parent" onchange="this.form.requestSubmit()">
-                  <option value="__self__">Добавить как отдельную тему</option>
+                  <option value="__self__">Добавить отдельной темой</option>
                   {% for option in release_group_options %}
-                  <option value="{{ option.id }}">Внутрь темы: {{ option.title }}</option>
+                  <option value="{{ option.id }}">Добавить к теме: {{ option.title }}</option>
                   {% endfor %}
                 </select>
               </form>
@@ -1210,22 +1254,6 @@ a { color: inherit; }
           </div>
         </section>
 
-        <section class="archive-block">
-          <h3>Последние правки</h3>
-          {% if recent_reviews %}
-          <ul class="archive-review-list">
-            {% for item in recent_reviews %}
-            <li>
-              <strong>{{ item.title }}</strong>
-              <div class="subline">{{ item.created_at }} · {{ item.action_label }}</div>
-              <div class="subline">{{ item.diff }}</div>
-            </li>
-            {% endfor %}
-          </ul>
-          {% else %}
-          <div class="empty">Пока ручных правок нет.</div>
-          {% endif %}
-        </section>
       </aside>
     </div>
     {% endif %}
@@ -1936,12 +1964,7 @@ def _build_release_sections(rows: list[Article]) -> list[dict]:
                     "keep": getattr(article, "keep", None),
                     "processing_status": getattr(article, "processing_status", None),
                     "decision_source": getattr(article, "decision_source", None),
-                    "preview_html": _release_item_preview_html(article)
-                    + (
-                        f'\n<p><i>📎 Другие публикации по теме: {_render_related_links(related)}</i></p>'
-                        if related and _render_related_links(related)
-                        else ""
-                    ),
+                    "preview_html": _release_item_preview_html(article),
                     "manual_group_parent_id": getattr(article, "manual_digest_parent_id", None),
                     "digest_force_standalone": bool(getattr(article, "digest_force_standalone", False)),
                     "needs_attention": not getattr(article, "event_type", None) or not tag_value,
@@ -2414,28 +2437,10 @@ def _render_panel(panel: str):
             sent_runs_count = sum(1 for item in digest_runs if item["status_class"] == "sent")
 
         review_total = review_future = review_archive = 0
-        recent_reviews = []
         if inspect(db.bind).has_table("article_reviews"):
             review_total = db.scalar(select(func.count()).select_from(ArticleReview)) or 0
             review_future = db.scalar(select(func.count()).select_from(ArticleReview).where(ArticleReview.review_scope == "future")) or 0
             review_archive = db.scalar(select(func.count()).select_from(ArticleReview).where(ArticleReview.review_scope == "archive")) or 0
-            recent_review_rows = db.execute(
-                select(ArticleReview, Article.title)
-                .join(Article, Article.id == ArticleReview.article_id)
-                .order_by(ArticleReview.created_at.desc())
-                .limit(6)
-            ).all()
-            for review, title in recent_review_rows:
-                created_local = review.created_at.astimezone(LOCAL_TZ) if review.created_at and review.created_at.tzinfo else review.created_at
-                recent_reviews.append(
-                    {
-                        "title": title,
-                        "created_at": created_local.strftime("%d.%m %H:%M") if created_local else "—",
-                        "action_label": _review_action_label(review.action),
-                        "review_scope_label": _review_scope_label(review.review_scope),
-                        "diff": _review_diff(review),
-                    }
-                )
 
         total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
         page = min(page, total_pages)
@@ -2686,7 +2691,6 @@ def _render_panel(panel: str):
         sent_digest_filter=sent_digest_filter,
         sent_digest_filter_label=sent_digest_filter_label,
         review_stats={"total": review_total, "future": review_future, "archive": review_archive},
-        recent_reviews=recent_reviews,
         page=page,
         total_pages=total_pages,
         page_range=_page_range(page, total_pages),
